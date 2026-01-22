@@ -136,6 +136,7 @@ model ExplorationRun {
   // Configuration (stored as JSON strings for SQLite)
   config         String?   // JSON: ExplorationConfig
   charter        String?   // JSON: Generated test charter
+  plan           String?   // JSON: Full exploration plan (for reruns)
 
   // Progress tracking
   currentStep    String?

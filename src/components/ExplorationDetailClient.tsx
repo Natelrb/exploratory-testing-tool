@@ -100,6 +100,33 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
     }
   };
 
+  const handleRerun = async () => {
+    if (!confirm("This will start a new exploration run using the exact same test plan. Continue?")) {
+      return;
+    }
+
+    startTransition(async () => {
+      try {
+        const response = await fetch(`/api/explore/${run.id}/rerun`, {
+          method: "POST",
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || "Failed to rerun exploration");
+        }
+
+        const data = await response.json();
+
+        // Redirect to the new run
+        router.push(`/explore/${data.newRunId}`);
+      } catch (error) {
+        console.error("Failed to rerun:", error);
+        alert(error instanceof Error ? error.message : "Failed to rerun exploration");
+      }
+    });
+  };
+
   const getStatusBadge = (status: string) => {
     const colors: Record<string, string> = {
       pending: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
@@ -181,6 +208,15 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 className="px-4 py-2 bg-red-600 text-white font-medium rounded-md hover:bg-red-700 disabled:opacity-50"
               >
                 {isStopping ? "Stopping..." : "Stop"}
+              </button>
+            )}
+            {(run.status === "completed" || run.status === "failed") && (
+              <button
+                onClick={handleRerun}
+                disabled={isPending}
+                className="px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 disabled:opacity-50"
+              >
+                {isPending ? "Starting rerun..." : "Rerun"}
               </button>
             )}
             <Link

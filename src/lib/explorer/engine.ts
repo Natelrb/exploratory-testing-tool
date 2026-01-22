@@ -36,12 +36,14 @@ export class ExplorationEngine {
   private networkRequests: NetworkRequest[] = [];
   private networkResponses: NetworkResponse[] = [];
   private actionSequence = 0;
+  private savedPlan?: Array<{ area: string; steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }> }>;
 
   constructor(
     runId: string,
     config: ExplorationConfig,
     aiConfig: AIConfig,
-    callbacks: ExplorationCallbacks = {}
+    callbacks: ExplorationCallbacks = {},
+    savedPlan?: Array<{ area: string; steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }> }>
   ) {
     this.runId = runId;
     this.config = {
@@ -55,6 +57,7 @@ export class ExplorationEngine {
     this.aiProvider = createAIProvider(aiConfig);
     this.callbacks = callbacks;
     this.evidenceDir = path.join(process.cwd(), "public", "evidence", runId);
+    this.savedPlan = savedPlan;
   }
 
   private log(level: string, message: string, data?: object) {
@@ -93,14 +96,31 @@ export class ExplorationEngine {
       await this.updateProgress(22, "Checking for accessibility issues");
       await this.saveInitialFindings(pageAnalysis);
 
-      await this.updateProgress(25, "Generating test charter");
-      const charter = await this.generateCharter(pageAnalysis);
-      await this.saveCharter(charter);
+      let plan;
 
-      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+      // Check if we have a saved plan (for reruns)
+      if (this.savedPlan) {
+        this.log("info", "Using saved plan from previous run (rerun mode)");
+        await this.updateProgress(30, "Loading saved test plan");
+        plan = this.savedPlan;
 
-      await this.updateProgress(35, "Planning exploration strategy");
-      const plan = await this.planExploration(pageAnalysis, charter);
+        // Save total actions for the saved plan
+        const totalActions = plan.reduce((sum, p) => sum + p.steps.length, 0);
+        await prisma.explorationRun.update({
+          where: { id: this.runId },
+          data: { totalActions: Math.min(totalActions, this.config.maxActions!) },
+        });
+      } else {
+        // Generate new plan
+        await this.updateProgress(25, "Generating test charter");
+        const charter = await this.generateCharter(pageAnalysis);
+        await this.saveCharter(charter);
+
+        if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
+        await this.updateProgress(35, "Planning exploration strategy");
+        plan = await this.planExploration(pageAnalysis, charter);
+      }
 
       if (this.shouldStop()) throw new Error("Exploration stopped by user");
 
@@ -1085,11 +1105,14 @@ export class ExplorationEngine {
       });
     }
 
-    // Save total actions
+    // Save total actions and the plan itself
     const totalActions = plans.reduce((sum, p) => sum + p.steps.length, 0);
     await prisma.explorationRun.update({
       where: { id: this.runId },
-      data: { totalActions: Math.min(totalActions, this.config.maxActions!) },
+      data: {
+        totalActions: Math.min(totalActions, this.config.maxActions!),
+        plan: JSON.stringify(plans), // Save plan for reruns
+      },
     });
 
     return plans;
@@ -1948,10 +1971,11 @@ export class ExplorationEngine {
   static async start(
     runId: string,
     config: ExplorationConfig,
-    aiConfig?: AIConfig
+    aiConfig?: AIConfig,
+    savedPlan?: Array<{ area: string; steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }> }>
   ): Promise<void> {
     const finalAiConfig = aiConfig || (await detectBestProvider());
-    const engine = new ExplorationEngine(runId, config, finalAiConfig);
+    const engine = new ExplorationEngine(runId, config, finalAiConfig, {}, savedPlan);
     await engine.run();
   }
 }

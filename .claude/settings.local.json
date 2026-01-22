@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lsof:*)",
+      "Bash(curl:*)",
+      "Bash(ps:*)",
+      "Bash(kill:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(npx prisma migrate dev:*)",
+      "Bash(npx prisma generate:*)"
+    ]
+  }
+}
