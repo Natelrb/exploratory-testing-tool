@@ -203,6 +203,15 @@ Always respond with valid JSON only.`;
     const relevantArea = pageAnalysis.keyAreas.find((a) => a.name === area);
     const relevantIdeas = charter.testIdeas.filter((t) => t.area === area);
 
+    // Separate elements by whether they're fillable or clickable
+    const clickableElements = pageAnalysis.interactiveElements.filter(el =>
+      el.tagName === 'BUTTON' || el.tagName === 'A' || el.type === 'submit' || el.type === 'button'
+    );
+    const fillableElements = pageAnalysis.interactiveElements.filter(el =>
+      (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+      el.type !== 'submit' && el.type !== 'button'
+    );
+
     const prompt = `Create an exploration plan for this area:
 
 Area: ${area}
@@ -210,18 +219,20 @@ ${relevantArea ? `Description: ${relevantArea.description}` : ""}
 ${relevantArea ? `Suggested Tests: ${relevantArea.suggestedTests.join(", ")}` : ""}
 ${relevantIdeas.length > 0 ? `Test Ideas: ${relevantIdeas.map((i) => i.idea).join(", ")}` : ""}
 
-Available elements on page:
-${JSON.stringify(pageAnalysis.interactiveElements.slice(0, 20), null, 2)}
+Clickable elements (use for "click" actions):
+${JSON.stringify(clickableElements.slice(0, 15), null, 2)}
+
+Fillable inputs (use for "fill" actions):
+${JSON.stringify(fillableElements.slice(0, 10), null, 2)}
 
 Forms on page:
 ${JSON.stringify(pageAnalysis.forms, null, 2)}
 
 CRITICAL RULES:
-- You MUST use ONLY the "selector" values from the "Available elements" and "Forms" lists above
+- For "click" actions: ONLY use selectors from "Clickable elements" list
+- For "fill" actions: ONLY use selectors from "Fillable inputs" or form fields
 - DO NOT invent or make up any selectors, especially data-testid attributes
 - DO NOT use generic selectors like button:nth-of-type(N)
-- For "fill" actions, ONLY use elements with tagName "INPUT" or "TEXTAREA", NOT buttons
-- For "click" actions, use elements with tagName "BUTTON", "A", or type "submit"/"button"
 - If you cannot find a suitable element in the provided lists, skip that test step
 - Maximum 3 steps per plan to keep response concise
 

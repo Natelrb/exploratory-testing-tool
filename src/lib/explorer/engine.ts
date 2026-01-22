@@ -1196,16 +1196,18 @@ export class ExplorationEngine {
                 await this.closeOverlaysIfPresent();
                 await this.page.click(step.target, { timeout: 5000, force: true });
               } else if (clickError.message.includes('outside of the viewport')) {
-                this.log("info", "Element outside viewport, forcing into view and clicking");
-                // Force scroll and click
+                this.log("info", "Element outside viewport, using JavaScript click");
+                // Use JavaScript click as a last resort - it bypasses viewport checks
                 await this.page.evaluate((selector) => {
                   const element = document.querySelector(selector);
-                  if (element) {
+                  if (element instanceof HTMLElement) {
                     element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+                    // Use JavaScript click which doesn't require viewport visibility
+                    element.click();
                   }
                 }, step.target);
+                // Wait for potential navigation/changes
                 await this.page.waitForTimeout(500);
-                await this.page.click(step.target, { timeout: 5000, force: true });
               } else {
                 throw clickError;
               }
@@ -1218,6 +1220,17 @@ export class ExplorationEngine {
 
         case "fill":
           try {
+            // Verify element is fillable before attempting
+            const elementInfo = await this.page.locator(step.target).evaluate((el) => ({
+              tagName: el.tagName,
+              type: (el as HTMLInputElement).type || null,
+              isButton: el.tagName === 'BUTTON' || (el as HTMLInputElement).type === 'button' || (el as HTMLInputElement).type === 'submit',
+            }));
+
+            if (elementInfo.isButton) {
+              throw new Error(`Cannot fill element - target is a ${elementInfo.tagName.toLowerCase()} button. Use "click" action instead.`);
+            }
+
             await this.page.fill(step.target, step.value || "", { timeout: 5000 });
           } catch (fillError) {
             // Provide better error message if trying to fill non-input element
