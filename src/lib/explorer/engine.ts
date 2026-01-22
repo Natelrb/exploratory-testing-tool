@@ -902,6 +902,30 @@ export class ExplorationEngine {
         case "wait":
           await this.page.waitForTimeout(parseInt(step.value || "1000"));
           break;
+
+        case "assert":
+        case "check":
+        case "verify":
+          // These are observation steps - just log the current state
+          this.log("info", `Assertion: ${step.description}`);
+          break;
+
+        case "navigate":
+          // Navigate to a URL or use keyboard navigation
+          if (step.target.startsWith("http")) {
+            await this.page.goto(step.target, { timeout: 10000 });
+          }
+          break;
+
+        case "press":
+        case "keyboard":
+          // Handle keyboard actions
+          await this.page.keyboard.press(step.value || "Enter");
+          break;
+
+        default:
+          this.log("warn", `Unknown action type: ${step.action}, skipping`);
+          break;
       }
 
       // Take after screenshot with human-readable description
@@ -1054,21 +1078,33 @@ export class ExplorationEngine {
     const filepath = path.join(this.evidenceDir, "screenshots", filename);
     const relativePath = `/evidence/${this.runId}/screenshots/${filename}`;
 
-    await this.page.screenshot({ path: filepath, fullPage: true });
+    try {
+      // Use viewport screenshot with timeout (faster than fullPage)
+      await this.page.screenshot({
+        path: filepath,
+        fullPage: false,  // Just viewport - much faster
+        timeout: 10000,   // 10 second timeout
+      });
 
-    // Save to database with human-readable description
-    await prisma.explorationEvidence.create({
-      data: {
-        runId: this.runId,
-        type: "screenshot",
-        path: relativePath,
-        description: description || name,
-      },
-    });
+      // Save to database with human-readable description
+      await prisma.explorationEvidence.create({
+        data: {
+          runId: this.runId,
+          type: "screenshot",
+          path: relativePath,
+          description: description || name,
+        },
+      });
 
-    this.callbacks.onEvidence?.({ type: "screenshot", path: relativePath });
+      this.callbacks.onEvidence?.({ type: "screenshot", path: relativePath });
 
-    return relativePath;
+      return relativePath;
+    } catch (error) {
+      this.log("warn", `Failed to take screenshot: ${name}`, {
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      return "";  // Return empty string on failure - don't block the action
+    }
   }
 
   private async collectFinalEvidence() {
