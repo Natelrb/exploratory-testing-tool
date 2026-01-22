@@ -36,6 +36,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [showRerunConfirm, setShowRerunConfirm] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState<"all" | "error" | "warn" | "info">("all");
 
   // Poll for updates if running
@@ -100,10 +101,12 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
     }
   };
 
-  const handleRerun = async () => {
-    if (!confirm("This will start a new exploration run using the exact same test plan. Continue?")) {
-      return;
-    }
+  const handleRerun = () => {
+    setShowRerunConfirm(true);
+  };
+
+  const handleRerunConfirm = async () => {
+    setShowRerunConfirm(false);
 
     startTransition(async () => {
       try {
@@ -643,6 +646,50 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
               >
                 Stop Exploration
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rerun Confirmation Dialog */}
+      {showRerunConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Rerun Exploration
+                </h3>
+                <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  This will start a new exploration run using the exact same test plan. The rerun will:
+                </p>
+                <ul className="mt-2 text-sm text-gray-600 dark:text-gray-400 list-disc list-inside">
+                  <li>Use the same URL and configuration</li>
+                  <li>Execute identical test ideas and steps</li>
+                  <li>Create a new run for comparison</li>
+                  <li>Skip AI planning (uses saved plan)</li>
+                </ul>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowRerunConfirm(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRerunConfirm}
+                disabled={isPending}
+                className="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-md transition-colors"
+              >
+                {isPending ? "Starting..." : "Start Rerun"}
               </button>
             </div>
           </div>
