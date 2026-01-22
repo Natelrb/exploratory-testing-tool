@@ -81,6 +81,9 @@ export class ExplorationEngine {
       await this.updateProgress(20, "Analyzing page structure");
 
       const pageAnalysis = await this.analyzePage();
+
+      // Save initial findings from page analysis
+      await this.saveInitialFindings(pageAnalysis);
       await this.updateProgress(30, "Generating test charter");
 
       const charter = await this.generateCharter(pageAnalysis);
@@ -94,6 +97,9 @@ export class ExplorationEngine {
       await this.updateProgress(90, "Collecting final evidence");
 
       await this.collectFinalEvidence();
+
+      // Generate exploration summary finding
+      await this.generateSummaryFinding(plan);
       await this.updateProgress(100, "Completed");
 
       await this.complete("completed");
@@ -598,6 +604,48 @@ export class ExplorationEngine {
     return issues;
   }
 
+  private async saveInitialFindings(pageAnalysis: PageAnalysis) {
+    // Save any issues identified during initial page analysis
+    for (const issue of pageAnalysis.issues) {
+      await this.recordFinding({
+        type: issue.type,
+        severity: issue.severity,
+        title: issue.title,
+        description: issue.description,
+        recommendation: issue.type === "accessibility"
+          ? "Review and fix accessibility issues per WCAG guidelines"
+          : "Investigate and address this potential issue",
+      });
+    }
+
+    // Check for common issues that weren't explicitly flagged
+    // Images without alt text
+    const imagesWithoutAlt = pageAnalysis.images.filter(img => !img.hasAlt);
+    if (imagesWithoutAlt.length > 0) {
+      await this.recordFinding({
+        type: "accessibility",
+        severity: "medium",
+        title: `${imagesWithoutAlt.length} image(s) missing alt text`,
+        description: `Found ${imagesWithoutAlt.length} images without alt attributes, which affects screen reader users.`,
+        recommendation: "Add descriptive alt text to all images for better accessibility.",
+      });
+    }
+
+    // Forms without proper labels
+    const formsWithUnlabeledFields = pageAnalysis.forms.filter(form =>
+      form.fields.some(field => !field.label && field.type !== "hidden")
+    );
+    if (formsWithUnlabeledFields.length > 0) {
+      await this.recordFinding({
+        type: "accessibility",
+        severity: "medium",
+        title: "Form fields missing labels",
+        description: `Some form fields are missing associated labels, which affects accessibility.`,
+        recommendation: "Add proper <label> elements or aria-label attributes to all form fields.",
+      });
+    }
+  }
+
   private async generateCharter(pageAnalysis: PageAnalysis) {
     this.log("info", "Generating test charter with AI");
 
@@ -1077,6 +1125,42 @@ export class ExplorationEngine {
         },
       });
     }
+  }
+
+  private async generateSummaryFinding(plans: Array<{ area: string; steps: Array<unknown> }>) {
+    // Count various metrics
+    const consoleErrors = this.consoleMessages.filter(m => m.type === "error").length;
+    const consoleWarnings = this.consoleMessages.filter(m => m.type === "warning").length;
+    const failedRequests = this.networkResponses.filter(r => r.status >= 400).length;
+    const totalAreas = plans.length;
+    const totalPlannedSteps = plans.reduce((sum, p) => sum + p.steps.length, 0);
+
+    // Build summary description
+    const summaryParts: string[] = [];
+    summaryParts.push(`Explored ${totalAreas} area(s) with ${totalPlannedSteps} planned actions.`);
+
+    if (consoleErrors > 0) {
+      summaryParts.push(`Detected ${consoleErrors} console error(s).`);
+    }
+    if (consoleWarnings > 0) {
+      summaryParts.push(`Detected ${consoleWarnings} console warning(s).`);
+    }
+    if (failedRequests > 0) {
+      summaryParts.push(`${failedRequests} network request(s) returned errors.`);
+    }
+    if (consoleErrors === 0 && failedRequests === 0) {
+      summaryParts.push("No critical errors detected during exploration.");
+    }
+
+    await this.recordFinding({
+      type: "summary",
+      severity: consoleErrors > 0 || failedRequests > 0 ? "medium" : "info",
+      title: "Exploration Summary",
+      description: summaryParts.join(" "),
+      recommendation: consoleErrors > 0 || failedRequests > 0
+        ? "Review the console logs and network traffic for details on the detected issues."
+        : "Review the evidence collected for any subtle issues not automatically detected.",
+    });
   }
 
   private async complete(status: "completed" | "failed") {
