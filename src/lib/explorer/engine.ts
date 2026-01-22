@@ -622,11 +622,26 @@ export class ExplorationEngine {
     // Images without alt text
     const imagesWithoutAlt = pageAnalysis.images.filter(img => !img.hasAlt);
     if (imagesWithoutAlt.length > 0) {
+      // List the actual image sources (truncate long URLs)
+      const imageList = imagesWithoutAlt
+        .slice(0, 10) // Limit to first 10
+        .map(img => {
+          const src = img.src;
+          // Extract filename or last part of URL
+          const filename = src.split('/').pop()?.split('?')[0] || src;
+          return filename.length > 60 ? filename.substring(0, 57) + '...' : filename;
+        })
+        .join('\n  - ');
+
+      const moreText = imagesWithoutAlt.length > 10
+        ? `\n  ...and ${imagesWithoutAlt.length - 10} more`
+        : '';
+
       await this.recordFinding({
         type: "accessibility",
         severity: "medium",
         title: `${imagesWithoutAlt.length} image(s) missing alt text`,
-        description: `Found ${imagesWithoutAlt.length} images without alt attributes, which affects screen reader users.`,
+        description: `Found ${imagesWithoutAlt.length} images without alt attributes, which affects screen reader users:\n  - ${imageList}${moreText}`,
         recommendation: "Add descriptive alt text to all images for better accessibility.",
       });
     }
@@ -636,11 +651,18 @@ export class ExplorationEngine {
       form.fields.some(field => !field.label && field.type !== "hidden")
     );
     if (formsWithUnlabeledFields.length > 0) {
+      // List the fields without labels
+      const fieldList = formsWithUnlabeledFields
+        .flatMap(form => form.fields.filter(f => !f.label && f.type !== "hidden"))
+        .slice(0, 10)
+        .map(f => `${f.name || f.type} (${f.selector})`)
+        .join('\n  - ');
+
       await this.recordFinding({
         type: "accessibility",
         severity: "medium",
         title: "Form fields missing labels",
-        description: `Some form fields are missing associated labels, which affects accessibility.`,
+        description: `Some form fields are missing associated labels, which affects accessibility:\n  - ${fieldList}`,
         recommendation: "Add proper <label> elements or aria-label attributes to all form fields.",
       });
     }
