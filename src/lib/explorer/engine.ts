@@ -1174,18 +1174,18 @@ export class ExplorationEngine {
   private async takeScreenshot(name: string, description?: string): Promise<string> {
     if (!this.page) return "";
 
-    // Sanitize filename
-    const sanitizedName = this.sanitizeFilename(name);
+    // Sanitize filename (limit to 40 chars to keep full path reasonable)
+    const sanitizedName = this.sanitizeFilename(name).substring(0, 40);
     const filename = `${sanitizedName}.png`;
     const filepath = path.join(this.evidenceDir, "screenshots", filename);
     const relativePath = `/evidence/${this.runId}/screenshots/${filename}`;
 
     try {
-      // Use viewport screenshot with timeout (faster than fullPage)
+      // Use viewport screenshot with generous timeout
       await this.page.screenshot({
         path: filepath,
         fullPage: false,  // Just viewport - much faster
-        timeout: 10000,   // 10 second timeout
+        timeout: 15000,   // 15 second timeout
       });
 
       // Save to database with human-readable description
@@ -1202,9 +1202,9 @@ export class ExplorationEngine {
 
       return relativePath;
     } catch (error) {
-      this.log("warn", `Failed to take screenshot: ${name}`, {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      // Include error message in the log for visibility
+      this.log("warn", `Screenshot failed: ${errorMsg.substring(0, 100)}`);
       return "";  // Return empty string on failure - don't block the action
     }
   }
