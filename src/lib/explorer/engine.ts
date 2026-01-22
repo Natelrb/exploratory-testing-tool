@@ -1200,6 +1200,17 @@ export class ExplorationEngine {
   }
 
   private async complete(status: "completed" | "failed") {
+    // Mark any actions still in "running" status as skipped/cancelled
+    await prisma.explorationAction.updateMany({
+      where: {
+        runId: this.runId,
+        status: "running",
+      },
+      data: {
+        status: status === "completed" ? "skipped" : "cancelled",
+      },
+    });
+
     await prisma.explorationRun.update({
       where: { id: this.runId },
       data: { status, endTime: new Date() },
