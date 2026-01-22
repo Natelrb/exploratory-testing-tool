@@ -613,9 +613,10 @@ export class ExplorationEngine {
         return path;
       };
 
-      const selectors = ["button", 'a[href]', 'input[type="submit"]', "[onclick]", "[data-toggle]"];
+      // Extract clickable elements (buttons, links)
+      const clickableSelectors = ["button", 'a[href]', 'input[type="submit"]', 'input[type="button"]', "[onclick]", "[data-toggle]"];
 
-      for (const selector of selectors) {
+      for (const selector of clickableSelectors) {
         document.querySelectorAll(selector).forEach((el) => {
           const htmlEl = el as HTMLElement;
           const text = htmlEl.textContent?.trim() || "";
@@ -630,6 +631,41 @@ export class ExplorationEngine {
               isEnabled: !(htmlEl as HTMLButtonElement).disabled,
             });
           }
+        });
+      }
+
+      // Extract fillable inputs (text, email, etc.) that are NOT in forms
+      // (form inputs are handled separately in extractForms)
+      const fillableSelectors = [
+        'input[type="text"]',
+        'input[type="email"]',
+        'input[type="password"]',
+        'input[type="search"]',
+        'input[type="tel"]',
+        'input[type="url"]',
+        'input[type="number"]',
+        'input:not([type])', // inputs without type default to text
+        'textarea',
+      ];
+
+      for (const selector of fillableSelectors) {
+        document.querySelectorAll(selector).forEach((el) => {
+          const htmlEl = el as HTMLInputElement | HTMLTextAreaElement;
+          // Skip if this input is part of a form (those are handled separately)
+          if (htmlEl.closest('form')) return;
+
+          const placeholder = htmlEl.placeholder || '';
+          const name = htmlEl.getAttribute('name') || '';
+
+          elements.push({
+            selector: generateSelector(htmlEl),
+            tagName: htmlEl.tagName,
+            type: htmlEl.type || 'text',
+            text: placeholder || name || `${htmlEl.tagName.toLowerCase()} field`,
+            ariaLabel: htmlEl.getAttribute("aria-label") || undefined,
+            isVisible: htmlEl.offsetParent !== null,
+            isEnabled: !htmlEl.disabled,
+          });
         });
       }
 
@@ -1146,13 +1182,30 @@ export class ExplorationEngine {
       switch (step.action) {
         case "click":
           try {
+            // Ensure element is in viewport before clicking
+            await this.page.locator(step.target).scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
             await this.page.click(step.target, { timeout: 5000 });
           } catch (clickError) {
-            // If click fails due to overlay, try one more time with force
-            if (clickError instanceof Error && clickError.message.includes('intercepts pointer events')) {
-              this.log("info", "Element blocked by overlay, attempting force click");
-              await this.closeOverlaysIfPresent();
-              await this.page.click(step.target, { timeout: 5000, force: true });
+            // If click fails, try recovery strategies
+            if (clickError instanceof Error) {
+              if (clickError.message.includes('intercepts pointer events')) {
+                this.log("info", "Element blocked by overlay, attempting force click");
+                await this.closeOverlaysIfPresent();
+                await this.page.click(step.target, { timeout: 5000, force: true });
+              } else if (clickError.message.includes('outside of the viewport')) {
+                this.log("info", "Element outside viewport, forcing into view and clicking");
+                // Force scroll and click
+                await this.page.evaluate((selector) => {
+                  const element = document.querySelector(selector);
+                  if (element) {
+                    element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+                  }
+                }, step.target);
+                await this.page.waitForTimeout(500);
+                await this.page.click(step.target, { timeout: 5000, force: true });
+              } else {
+                throw clickError;
+              }
             } else {
               throw clickError;
             }
@@ -1161,7 +1214,15 @@ export class ExplorationEngine {
           break;
 
         case "fill":
-          await this.page.fill(step.target, step.value || "", { timeout: 5000 });
+          try {
+            await this.page.fill(step.target, step.value || "", { timeout: 5000 });
+          } catch (fillError) {
+            // Provide better error message if trying to fill non-input element
+            if (fillError instanceof Error && fillError.message.includes('not an <input>')) {
+              throw new Error(`Cannot fill element - target is not a fillable input field (use "click" action for buttons)`);
+            }
+            throw fillError;
+          }
           break;
 
         case "select":

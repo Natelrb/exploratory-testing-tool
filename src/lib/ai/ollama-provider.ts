@@ -214,6 +214,8 @@ CRITICAL RULES:
 - You MUST use ONLY the "selector" values from the "Available elements" and "Forms" lists above
 - DO NOT invent or make up any selectors, especially data-testid attributes
 - DO NOT use generic selectors like button:nth-of-type(N)
+- For "fill" actions, ONLY use elements with tagName "INPUT" or "TEXTAREA", NOT buttons
+- For "click" actions, use elements with tagName "BUTTON", "A", or type "submit"/"button"
 - If you cannot find a suitable element in the provided lists, skip that test step
 - Maximum 3 steps per plan to keep response concise
 
