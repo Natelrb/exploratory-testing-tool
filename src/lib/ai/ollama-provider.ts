@@ -197,22 +197,29 @@ ${JSON.stringify(pageAnalysis.interactiveElements.slice(0, 20), null, 2)}
 Forms on page:
 ${JSON.stringify(pageAnalysis.forms, null, 2)}
 
+IMPORTANT: Focus on concrete, clickable elements with specific CSS selectors. Avoid abstract keyboard navigation tests - use direct click actions instead.
+
 Respond with this exact JSON structure:
 {
   "objective": "What we want to learn from exploring this area",
   "steps": [
     {
-      "action": "click|fill|select|hover|scroll|wait|assert",
-      "target": "CSS selector or element description",
+      "action": "click|fill|select|hover|scroll|wait",
+      "target": "Specific CSS selector like #id, .class, or [data-testid='x'] - NOT generic selectors like button:nth-of-type(N)",
       "value": "value to fill (if applicable)",
-      "description": "Human-readable step description",
+      "description": "Human-readable step description (what action we're taking)",
       "expectedOutcome": "What should happen",
       "riskLevel": "safe|moderate|risky"
     }
   ],
   "expectedFindings": ["what we might discover"],
   "risks": ["potential issues with this plan"]
-}`;
+}
+
+Rules:
+- Use SPECIFIC selectors from the Available elements list, not generic nth-of-type selectors
+- Keep steps to direct interactions (click, fill) not keyboard navigation
+- Maximum 5 steps per plan`;
 
     const response = await this.chat(prompt, systemPrompt);
     return this.extractJSON<ExplorationPlanResult>(response);
