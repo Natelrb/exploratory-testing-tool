@@ -60,7 +60,7 @@ export class RerunExplorationUseCase {
     // Create new run
     const newRun = await this.explorationRepo.create({
       url: originalRun.url,
-      config: originalRun.config,
+      config: originalRun.config || undefined,
       plan: originalRun.plan,
       aiProvider: originalRun.aiProvider,
       aiModel: originalRun.aiModel || undefined,
@@ -69,9 +69,9 @@ export class RerunExplorationUseCase {
     // Start engine in background
     ExplorationEngine.start(
       newRun.id,
-      { url: originalRun.url, ...config },
+      { ...config, url: originalRun.url },
       {
-        provider: originalRun.aiProvider,
+        provider: originalRun.aiProvider as 'ollama' | 'anthropic' | 'openai' | 'heuristic',
         model: originalRun.aiModel || undefined,
       },
       plan

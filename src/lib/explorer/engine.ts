@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { prisma } from "@/lib/db";
 import { explorationManager } from "./manager";
-import { config } from "@/config";
+import { config as appConfig } from "@/config";
 import fs from "fs/promises";
 import path from "path";
 
@@ -49,9 +49,9 @@ export class ExplorationEngine {
     this.runId = runId;
     this.config = {
       headless: true,
-      viewport: config.exploration.defaultViewport,
-      timeout: config.exploration.defaultTimeout,
-      maxActions: config.exploration.defaultMaxActions,
+      viewport: appConfig.exploration.defaultViewport,
+      timeout: appConfig.exploration.defaultTimeout,
+      maxActions: appConfig.exploration.defaultMaxActions,
       ...explorationConfig,
     };
     this.aiConfig = aiConfig;
@@ -1167,7 +1167,7 @@ export class ExplorationEngine {
 
       // Track consecutive failures for this plan
       let consecutiveFailures = 0;
-      const maxConsecutiveFailures = config.exploration.maxConsecutiveFailures;
+      const maxConsecutiveFailures = appConfig.exploration.maxConsecutiveFailures;
 
       for (const step of plan.steps) {
         if (actionsExecuted >= maxActions) break;
@@ -1483,9 +1483,12 @@ export class ExplorationEngine {
 
       // Check if selector exists on the page
       try {
-        const elementExists = await this.page.locator(step.target).count({
-          timeout: config.exploration.selectorValidationTimeout
-        }) > 0;
+        // Use waitFor with timeout instead of count with timeout
+        await this.page.locator(step.target).first().waitFor({
+          state: 'attached',
+          timeout: appConfig.exploration.selectorValidationTimeout
+        });
+        const elementExists = true;
         if (elementExists) {
           validSteps.push(step);
         } else {
@@ -1815,7 +1818,7 @@ export class ExplorationEngine {
       await this.page.screenshot({
         path: filepath,
         fullPage: false,  // Just viewport - much faster
-        timeout: config.exploration.screenshotTimeout,
+        timeout: appConfig.exploration.screenshotTimeout,
       });
 
       // Save to database with human-readable description
