@@ -5,11 +5,12 @@ import { prisma } from "@/lib/db";
 // DELETE a configuration
 export async function DELETE(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     await prisma.savedConfiguration.delete({
-      where: { id: params.id },
+      where: { id },
     });
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -24,14 +25,15 @@ export async function DELETE(
 // PATCH update a configuration
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const body = await request.json();
     const { name, url, username, password, description } = body;
 
     const config = await prisma.savedConfiguration.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         ...(name && { name }),
         ...(url && { url }),
