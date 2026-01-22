@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect, useTransition } from "react";
+import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useExplorationDetail } from "@/features/exploration/presentation/hooks/use-exploration-detail";
+import { useExplorationActions } from "@/features/exploration/presentation/hooks/use-exploration-actions";
 import Image from "next/image";
 import type {
   ExplorationRun,
@@ -29,50 +31,36 @@ interface Props {
 export default function ExplorationDetailClient({ run: initialRun }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [run, setRun] = useState(initialRun);
-  const [activeTab, setActiveTab] = useState<"actions" | "findings" | "evidence" | "logs">(
-    "actions"
-  );
-  const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
-  const [isStopping, setIsStopping] = useState(false);
-  const [showStopConfirm, setShowStopConfirm] = useState(false);
-  const [showRerunConfirm, setShowRerunConfirm] = useState(false);
-  const [rerunError, setRerunError] = useState<string | null>(null);
-  const [logLevelFilter, setLogLevelFilter] = useState<"all" | "error" | "warn" | "info">("all");
 
-  // Poll for updates if running
-  useEffect(() => {
-    if (run.status !== "running" && run.status !== "pending") return;
+  // Use custom hooks
+  const {
+    run,
+    activeTab,
+    selectedScreenshot,
+    showStopConfirm,
+    showRerunConfirm,
+    logLevelFilter,
+    setActiveTab,
+    setSelectedScreenshot,
+    setShowStopConfirm,
+    setShowRerunConfirm,
+    setLogLevelFilter,
+  } = useExplorationDetail(initialRun);
 
-    const interval = setInterval(() => {
-      router.refresh();
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [run.status, router]);
-
-  // Update run when initialRun changes
-  useEffect(() => {
-    setRun(initialRun);
-  }, [initialRun]);
+  const {
+    startExploration,
+    stopExploration,
+    rerunExploration,
+    isStarting,
+    isStopping,
+    isRerunning,
+    error: actionError,
+    clearError,
+  } = useExplorationActions(run.id);
 
   const handleStart = async () => {
     startTransition(async () => {
-      try {
-        const response = await fetch(`/api/explore/${run.id}/start`, {
-          method: "POST",
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || "Failed to start exploration");
-        }
-
-        router.refresh();
-      } catch (error) {
-        console.error("Failed to start:", error);
-        alert(error instanceof Error ? error.message : "Failed to start exploration");
-      }
+      await startExploration();
     });
   };
 
@@ -82,24 +70,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
 
   const handleStopConfirm = async () => {
     setShowStopConfirm(false);
-    setIsStopping(true);
-    try {
-      const response = await fetch(`/api/explore/${run.id}/stop`, {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to stop exploration");
-      }
-
-      router.refresh();
-    } catch (error) {
-      console.error("Failed to stop:", error);
-      alert(error instanceof Error ? error.message : "Failed to stop exploration");
-    } finally {
-      setIsStopping(false);
-    }
+    await stopExploration();
   };
 
   const handleRerun = () => {
@@ -108,26 +79,11 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
 
   const handleRerunConfirm = async () => {
     setShowRerunConfirm(false);
-    setRerunError(null);
 
     startTransition(async () => {
-      try {
-        const response = await fetch(`/api/explore/${run.id}/rerun`, {
-          method: "POST",
-        });
-
-        if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || "Failed to rerun exploration");
-        }
-
-        const data = await response.json();
-
-        // Redirect to the new run
-        router.push(`/explore/${data.newRunId}`);
-      } catch (error) {
-        console.error("Failed to rerun:", error);
-        setRerunError(error instanceof Error ? error.message : "Failed to rerun exploration");
+      const newRunId = await rerunExploration();
+      if (newRunId) {
+        router.push(`/explore/${newRunId}`);
       }
     });
   };
@@ -200,10 +156,10 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
             {run.status === "pending" && (
               <button
                 onClick={handleStart}
-                disabled={isPending}
+                disabled={isStarting}
                 className="px-4 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:opacity-50"
               >
-                {isPending ? "Starting..." : "Start Exploration"}
+                {isStarting ? "Starting..." : "Start Exploration"}
               </button>
             )}
             {run.status === "running" && (
@@ -218,11 +174,11 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
             {(run.status === "completed" || run.status === "failed") && run.plan && (
               <button
                 onClick={handleRerun}
-                disabled={isPending}
+                disabled={isRerunning}
                 className="px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 disabled:opacity-50"
                 title="Rerun with the same test plan"
               >
-                {isPending ? "Starting rerun..." : "Rerun"}
+                {isRerunning ? "Starting rerun..." : "Rerun"}
               </button>
             )}
             <Link
@@ -234,8 +190,8 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
           </div>
         </div>
 
-        {/* Rerun Error */}
-        {rerunError && (
+        {/* Action Error */}
+        {actionError && (
           <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
             <div className="flex items-start gap-2">
               <svg className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -243,14 +199,14 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
               </svg>
               <div className="flex-1">
                 <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                  Failed to rerun exploration
+                  Action failed
                 </p>
                 <p className="mt-1 text-sm text-red-700 dark:text-red-300">
-                  {rerunError}
+                  {actionError}
                 </p>
               </div>
               <button
-                onClick={() => setRerunError(null)}
+                onClick={clearError}
                 className="text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
