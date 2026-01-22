@@ -1234,6 +1234,127 @@ export class ExplorationEngine {
     }
   }
 
+  private async capturePageState() {
+    if (!this.page) return null;
+
+    try {
+      const url = this.page.url();
+      const title = await this.page.title();
+
+      // Capture key page indicators
+      const bodyText = await this.page.evaluate(() => {
+        // Get visible text from body, limited to first 500 chars
+        return document.body?.innerText?.substring(0, 500) || '';
+      });
+
+      const elementCount = await this.page.evaluate(() => {
+        return {
+          buttons: document.querySelectorAll('button').length,
+          links: document.querySelectorAll('a').length,
+          inputs: document.querySelectorAll('input').length,
+          modals: document.querySelectorAll('[role="dialog"], .modal').length,
+        };
+      });
+
+      return {
+        url,
+        title,
+        bodyText,
+        elementCount,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  private verifyOutcome(
+    step: { action: string; target: string; description: string; expectedOutcome: string },
+    beforeState: Awaited<ReturnType<typeof this.capturePageState>>,
+    afterState: Awaited<ReturnType<typeof this.capturePageState>>
+  ): { success: boolean; reason?: string } {
+    // If we couldn't capture state, assume success
+    if (!beforeState || !afterState) {
+      return { success: true };
+    }
+
+    // For wait actions, verify that something actually changed
+    if (step.action === "wait") {
+      // Check if URL changed
+      if (beforeState.url !== afterState.url) {
+        return { success: true };
+      }
+
+      // Check if title changed
+      if (beforeState.title !== afterState.title) {
+        return { success: true };
+      }
+
+      // Check if page content changed significantly
+      if (beforeState.bodyText !== afterState.bodyText) {
+        return { success: true };
+      }
+
+      // Check if modals appeared/disappeared
+      if (beforeState.elementCount.modals !== afterState.elementCount.modals) {
+        return { success: true };
+      }
+
+      // Nothing changed during wait
+      return {
+        success: false,
+        reason: `Waited ${step.target || '1000ms'} but page state did not change (URL, title, and content remained identical)`,
+      };
+    }
+
+    // For click actions, expect some change
+    if (step.action === "click") {
+      // URL change is a strong indicator something happened
+      if (beforeState.url !== afterState.url) {
+        return { success: true };
+      }
+
+      // Modal opened/closed
+      if (beforeState.elementCount.modals !== afterState.elementCount.modals) {
+        return { success: true };
+      }
+
+      // Content changed significantly
+      const contentSimilarity = this.calculateSimilarity(beforeState.bodyText, afterState.bodyText);
+      if (contentSimilarity < 0.9) {
+        return { success: true };
+      }
+
+      // For clicks, allow no change (might be a no-op button or already selected)
+      return { success: true };
+    }
+
+    // For fill actions, just verify it completed without error
+    if (step.action === "fill") {
+      return { success: true };
+    }
+
+    // For other actions, assume success if no error was thrown
+    return { success: true };
+  }
+
+  private calculateSimilarity(str1: string, str2: string): number {
+    // Simple similarity check - percentage of matching characters
+    if (str1 === str2) return 1.0;
+    if (!str1 || !str2) return 0.0;
+
+    const maxLen = Math.max(str1.length, str2.length);
+    if (maxLen === 0) return 1.0;
+
+    let matches = 0;
+    const minLen = Math.min(str1.length, str2.length);
+    for (let i = 0; i < minLen; i++) {
+      if (str1[i] === str2[i]) matches++;
+    }
+
+    return matches / maxLen;
+  }
+
   private async validatePageState(): Promise<{ isValid: boolean; reason?: string }> {
     if (!this.page) return { isValid: false, reason: "Page not initialized" };
 
@@ -1389,6 +1510,9 @@ export class ExplorationEngine {
     const beforeDesc = `Before ${step.action}: ${step.description}`;
     const beforePath = await this.takeScreenshot(`action-${this.actionSequence}-${actionName}-before`, beforeDesc);
 
+    // Capture page state before action for comparison
+    const beforeState = await this.capturePageState();
+
     try {
       // Try to close any overlays before executing actions
       await this.closeOverlaysIfPresent();
@@ -1500,8 +1624,22 @@ export class ExplorationEngine {
       const afterDesc = `After ${step.action}: ${step.description}`;
       const afterPath = await this.takeScreenshot(`action-${this.actionSequence}-${actionName}-after`, afterDesc);
 
+      // Capture page state after action
+      const afterState = await this.capturePageState();
+
+      // Verify expected outcome
+      const outcomeVerification = this.verifyOutcome(step, beforeState, afterState);
+      if (!outcomeVerification.success) {
+        this.log("warn", `Action completed but expected outcome not met: ${outcomeVerification.reason}`);
+      }
+
       // Collect observations
       const observations = await this.collectObservations();
+
+      // Add outcome verification to observations if it failed
+      if (!outcomeVerification.success) {
+        observations.unshift(`Expected outcome not met: ${outcomeVerification.reason}`);
+      }
 
       // Update action as success
       const duration = Date.now() - startTime;
