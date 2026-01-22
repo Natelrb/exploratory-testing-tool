@@ -581,13 +581,39 @@ export class ExplorationEngine {
     if (!this.page) return [];
 
     return this.page.evaluate(() => {
-      const images: Array<{ src: string; alt?: string; hasAlt: boolean }> = [];
+      const images: Array<{
+        src: string;
+        alt?: string;
+        hasAlt: boolean;
+        selector: string;
+        dimensions: string;
+        context: string;
+      }> = [];
 
-      document.querySelectorAll("img").forEach((img) => {
+      document.querySelectorAll("img").forEach((img, index) => {
+        // Build a useful selector
+        let selector = "img";
+        if (img.id) {
+          selector = `#${img.id}`;
+        } else if (img.className) {
+          selector = `img.${img.className.split(' ')[0]}`;
+        } else {
+          selector = `img:nth-of-type(${index + 1})`;
+        }
+
+        // Get parent context
+        const parent = img.parentElement;
+        const context = parent
+          ? `inside ${parent.tagName.toLowerCase()}${parent.className ? '.' + parent.className.split(' ')[0] : ''}`
+          : '';
+
         images.push({
           src: img.src,
           alt: img.alt || undefined,
           hasAlt: !!img.alt,
+          selector,
+          dimensions: `${img.naturalWidth || img.width}x${img.naturalHeight || img.height}`,
+          context,
         });
       });
 
@@ -639,14 +665,39 @@ export class ExplorationEngine {
     // Images without alt text
     const imagesWithoutAlt = pageAnalysis.images.filter(img => !img.hasAlt);
     if (imagesWithoutAlt.length > 0) {
-      // List the actual image sources (truncate long URLs)
+      // List the images with useful identifying info
       const imageList = imagesWithoutAlt
         .slice(0, 10) // Limit to first 10
         .map(img => {
-          const src = img.src;
-          // Extract filename or last part of URL
-          const filename = src.split('/').pop()?.split('?')[0] || src;
-          return filename.length > 60 ? filename.substring(0, 57) + '...' : filename;
+          const src = img.src || '';
+
+          // Handle different src types
+          let srcInfo: string;
+          if (src.startsWith('data:')) {
+            // Data URI - show type and size hint
+            const mimeMatch = src.match(/^data:([^;,]+)/);
+            const mime = mimeMatch ? mimeMatch[1] : 'unknown';
+            srcInfo = `[inline ${mime}]`;
+          } else if (src.startsWith('blob:')) {
+            srcInfo = '[blob URL]';
+          } else {
+            // Regular URL - extract meaningful part
+            try {
+              const url = new URL(src);
+              const pathname = url.pathname;
+              const filename = pathname.split('/').pop() || pathname;
+              srcInfo = filename.length > 40 ? filename.substring(0, 37) + '...' : filename;
+            } catch {
+              srcInfo = src.length > 40 ? src.substring(0, 37) + '...' : src;
+            }
+          }
+
+          // Add selector and context for easier identification
+          const selector = (img as { selector?: string }).selector || 'img';
+          const context = (img as { context?: string }).context || '';
+          const dimensions = (img as { dimensions?: string }).dimensions || '';
+
+          return `${srcInfo} (${selector}${dimensions ? ', ' + dimensions : ''}${context ? ', ' + context : ''})`;
         })
         .join('\n  - ');
 

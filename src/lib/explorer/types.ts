@@ -34,7 +34,14 @@ export interface PageAnalysis {
   interactiveElements: PageElement[];
   links: LinkInfo[];
   headings: { level: number; text: string }[];
-  images: { src: string; alt?: string; hasAlt: boolean }[];
+  images: {
+    src: string;
+    alt?: string;
+    hasAlt: boolean;
+    selector: string;
+    dimensions: string;
+    context: string;
+  }[];
   issues: PageIssue[];
 }
 
