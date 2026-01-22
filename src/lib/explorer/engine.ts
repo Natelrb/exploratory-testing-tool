@@ -1013,7 +1013,13 @@ export class ExplorationEngine {
           simplifiedAnalysis,
           charter
         );
-        plans.push({ area: idea.area, ...plan });
+        // Validate and filter out steps with invalid selectors
+        const validatedPlan = await this.validatePlanSelectors(plan);
+        if (validatedPlan.steps.length > 0) {
+          plans.push({ area: idea.area, ...validatedPlan });
+        } else {
+          this.log("warn", `Plan for "${idea.area}" had no valid selectors, skipping`);
+        }
       } catch (error) {
         this.log("warn", `Failed to plan for area ${idea.area}: ${error instanceof Error ? error.message : "Unknown"}`);
       }
@@ -1027,7 +1033,13 @@ export class ExplorationEngine {
           simplifiedAnalysis,
           charter
         );
-        plans.push({ area: idea.area, ...plan });
+        // Validate and filter out steps with invalid selectors
+        const validatedPlan = await this.validatePlanSelectors(plan);
+        if (validatedPlan.steps.length > 0) {
+          plans.push({ area: idea.area, ...validatedPlan });
+        } else {
+          this.log("warn", `Plan for "${idea.area}" had no valid selectors, skipping`);
+        }
       } catch (error) {
         this.log("warn", `Failed to plan for area ${idea.area}: ${error instanceof Error ? error.message : "Unknown"}`);
       }
@@ -1305,6 +1317,43 @@ export class ExplorationEngine {
     }
 
     return { isValid: true };
+  }
+
+  private async validatePlanSelectors(plan: {
+    objective: string;
+    steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }>;
+    expectedFindings: string[];
+    risks: string[];
+  }) {
+    if (!this.page) return plan;
+
+    const validSteps = [];
+
+    for (const step of plan.steps) {
+      // Skip steps that don't have selectors (like wait, assert, etc.)
+      if (!step.target || step.action === "wait" || step.action === "assert" || step.action === "check") {
+        validSteps.push(step);
+        continue;
+      }
+
+      // Check if selector exists on the page
+      try {
+        const elementExists = await this.page.locator(step.target).count({ timeout: 2000 }) > 0;
+        if (elementExists) {
+          validSteps.push(step);
+        } else {
+          this.log("info", `Skipping step with non-existent selector: ${step.target} (${step.description})`);
+        }
+      } catch (error) {
+        // Invalid selector syntax or not found
+        this.log("info", `Skipping step with invalid selector: ${step.target} (${step.description})`);
+      }
+    }
+
+    return {
+      ...plan,
+      steps: validSteps,
+    };
   }
 
   private async executeStep(step: { action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }) {
