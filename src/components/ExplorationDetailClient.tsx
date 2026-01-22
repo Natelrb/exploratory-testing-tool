@@ -37,6 +37,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
   const [isStopping, setIsStopping] = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showRerunConfirm, setShowRerunConfirm] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
   const [logLevelFilter, setLogLevelFilter] = useState<"all" | "error" | "warn" | "info">("all");
 
   // Poll for updates if running
@@ -107,6 +108,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
 
   const handleRerunConfirm = async () => {
     setShowRerunConfirm(false);
+    setRerunError(null);
 
     startTransition(async () => {
       try {
@@ -125,7 +127,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
         router.push(`/explore/${data.newRunId}`);
       } catch (error) {
         console.error("Failed to rerun:", error);
-        alert(error instanceof Error ? error.message : "Failed to rerun exploration");
+        setRerunError(error instanceof Error ? error.message : "Failed to rerun exploration");
       }
     });
   };
@@ -213,11 +215,12 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 {isStopping ? "Stopping..." : "Stop"}
               </button>
             )}
-            {(run.status === "completed" || run.status === "failed") && (
+            {(run.status === "completed" || run.status === "failed") && run.plan && (
               <button
                 onClick={handleRerun}
                 disabled={isPending}
                 className="px-4 py-2 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 disabled:opacity-50"
+                title="Rerun with the same test plan"
               >
                 {isPending ? "Starting rerun..." : "Rerun"}
               </button>
@@ -230,6 +233,33 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
             </Link>
           </div>
         </div>
+
+        {/* Rerun Error */}
+        {rerunError && (
+          <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+            <div className="flex items-start gap-2">
+              <svg className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-800 dark:text-red-200">
+                  Failed to rerun exploration
+                </p>
+                <p className="mt-1 text-sm text-red-700 dark:text-red-300">
+                  {rerunError}
+                </p>
+              </div>
+              <button
+                onClick={() => setRerunError(null)}
+                className="text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Progress bar for running */}
         {run.status === "running" && (
