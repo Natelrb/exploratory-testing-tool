@@ -249,7 +249,7 @@ CRITICAL RULES:
 - DO NOT invent or make up any selectors, especially data-testid attributes
 - DO NOT use generic selectors like button:nth-of-type(N)
 - If you cannot find a suitable element in the provided lists, skip that test step
-- Maximum 3 steps per plan to keep response concise
+- Aim for 3-5 steps per plan for thorough exploration (up to 7 for complex areas)
 
 Respond with this exact JSON structure (keep it concise):
 {

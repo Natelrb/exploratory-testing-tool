@@ -48,7 +48,7 @@ export class ExplorationEngine {
       headless: true,
       viewport: { width: 1920, height: 1080 },
       timeout: 30000,
-      maxActions: 20,
+      maxActions: 50, // Increased for more thorough exploration
       ...config,
     };
     this.aiConfig = aiConfig;
@@ -955,9 +955,13 @@ export class ExplorationEngine {
 
     const plans = [];
 
-    // Plan exploration for each high-priority test idea
+    // Plan exploration for high and medium priority test ideas
     const highPriorityIdeas = charter.testIdeas
       .filter((t) => t.priority === "high")
+      .slice(0, 5);
+
+    const mediumPriorityIdeas = charter.testIdeas
+      .filter((t) => t.priority === "medium")
       .slice(0, 3);
 
     // Create simplified analysis for the AI
@@ -993,6 +997,7 @@ export class ExplorationEngine {
       accessibilityNotes: [],
     };
 
+    // Plan for high priority ideas
     for (const idea of highPriorityIdeas) {
       try {
         const plan = await this.aiProvider.proposeExplorationPlan(
@@ -1006,7 +1011,43 @@ export class ExplorationEngine {
       }
     }
 
-    // Also add basic exploration of forms
+    // Plan for medium priority ideas
+    for (const idea of mediumPriorityIdeas) {
+      try {
+        const plan = await this.aiProvider.proposeExplorationPlan(
+          idea.area,
+          simplifiedAnalysis,
+          charter
+        );
+        plans.push({ area: idea.area, ...plan });
+      } catch (error) {
+        this.log("warn", `Failed to plan for area ${idea.area}: ${error instanceof Error ? error.message : "Unknown"}`);
+      }
+    }
+
+    // Add basic exploration of interactive elements (buttons, links)
+    const interactiveToExplore = pageAnalysis.interactiveElements
+      .filter(el => el.isVisible && el.isEnabled)
+      .slice(0, 8);
+
+    if (interactiveToExplore.length > 0) {
+      plans.push({
+        area: "Interactive Elements",
+        objective: "Test clickable buttons and links",
+        steps: interactiveToExplore.slice(0, 5).map((el) => ({
+          action: "click" as const,
+          target: el.selector,
+          value: undefined,
+          description: `Click ${el.text || el.ariaLabel || "element"}`,
+          expectedOutcome: "Element responds to interaction",
+          riskLevel: "safe" as const,
+        })),
+        expectedFindings: ["Button/link behavior", "Navigation patterns"],
+        risks: [],
+      });
+    }
+
+    // Add basic exploration of forms
     for (const form of pageAnalysis.forms.slice(0, 2)) {
       plans.push({
         area: "Form Testing",
