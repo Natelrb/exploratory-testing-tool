@@ -34,6 +34,8 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
     "actions"
   );
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
 
   // Poll for updates if running
   useEffect(() => {
@@ -69,6 +71,32 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
         alert(error instanceof Error ? error.message : "Failed to start exploration");
       }
     });
+  };
+
+  const handleStop = () => {
+    setShowStopConfirm(true);
+  };
+
+  const handleStopConfirm = async () => {
+    setShowStopConfirm(false);
+    setIsStopping(true);
+    try {
+      const response = await fetch(`/api/explore/${run.id}/stop`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to stop exploration");
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error("Failed to stop:", error);
+      alert(error instanceof Error ? error.message : "Failed to stop exploration");
+    } finally {
+      setIsStopping(false);
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -145,6 +173,15 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 {isPending ? "Starting..." : "Start Exploration"}
               </button>
             )}
+            {run.status === "running" && (
+              <button
+                onClick={handleStop}
+                disabled={isStopping}
+                className="px-4 py-2 bg-red-600 text-white font-medium rounded-md hover:bg-red-700 disabled:opacity-50"
+              >
+                {isStopping ? "Stopping..." : "Stop"}
+              </button>
+            )}
             <Link
               href="/explore"
               className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md"
@@ -216,22 +253,38 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
         <div className="border-b border-gray-200 dark:border-gray-700">
           <nav className="flex -mb-px">
-            {(["actions", "findings", "evidence", "logs"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-3 text-sm font-medium border-b-2 ${
-                  activeTab === tab
-                    ? "border-blue-500 text-blue-600 dark:text-blue-400"
-                    : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-                }`}
-              >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                <span className="ml-1 text-xs text-gray-400">
-                  ({run[tab].length})
-                </span>
-              </button>
-            ))}
+            {(["actions", "findings", "evidence", "logs"] as const).map((tab) => {
+              // Count errors and warnings for logs tab
+              const errorCount = tab === "logs" ? run.logs.filter(l => l.level === "error").length : 0;
+              const warnCount = tab === "logs" ? run.logs.filter(l => l.level === "warn").length : 0;
+
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-3 text-sm font-medium border-b-2 flex items-center gap-1 ${
+                    activeTab === tab
+                      ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                      : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                  }`}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  <span className="text-xs text-gray-400">
+                    ({run[tab].length})
+                  </span>
+                  {tab === "logs" && errorCount > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 rounded">
+                      {errorCount} error{errorCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {tab === "logs" && warnCount > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300 rounded">
+                      {warnCount} warn{warnCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
 
@@ -459,6 +512,49 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
             >
               ✕
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Stop Confirmation Dialog */}
+      {showStopConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Stop Exploration
+                </h3>
+                <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  Are you sure you want to stop this exploration? This will:
+                </p>
+                <ul className="mt-2 text-sm text-gray-600 dark:text-gray-400 list-disc list-inside">
+                  <li>Terminate the browser session immediately</li>
+                  <li>Mark remaining actions as cancelled</li>
+                  <li>Keep all evidence collected so far</li>
+                </ul>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowStopConfirm(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleStopConfirm}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+              >
+                Stop Exploration
+              </button>
+            </div>
           </div>
         </div>
       )}
