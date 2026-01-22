@@ -36,6 +36,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [logLevelFilter, setLogLevelFilter] = useState<"all" | "error" | "warn" | "info">("all");
 
   // Poll for updates if running
   useEffect(() => {
@@ -462,31 +463,84 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
 
           {/* Logs Tab */}
           {activeTab === "logs" && (
-            <div className="space-y-1 max-h-96 overflow-y-auto font-mono text-xs">
-              {run.logs.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400 text-center py-4 font-sans text-sm">
-                  No logs yet
-                </p>
-              ) : (
-                run.logs.map((log) => (
-                  <div
-                    key={log.id}
-                    className={`py-1 px-2 rounded ${
-                      log.level === "error"
-                        ? "bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300"
-                        : log.level === "warn"
-                        ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-300"
-                        : "text-gray-600 dark:text-gray-400"
-                    }`}
-                  >
-                    <span className="text-gray-400 dark:text-gray-500">
-                      {new Date(log.timestamp).toLocaleTimeString()}
-                    </span>{" "}
-                    <span className="font-semibold">[{log.level.toUpperCase()}]</span>{" "}
-                    {log.message}
-                  </div>
-                ))
-              )}
+            <div className="space-y-3">
+              {/* Log Level Filter */}
+              <div className="flex gap-2 border-b border-gray-200 dark:border-gray-700 pb-3">
+                <button
+                  onClick={() => setLogLevelFilter("all")}
+                  className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
+                    logLevelFilter === "all"
+                      ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  All ({run.logs.length})
+                </button>
+                <button
+                  onClick={() => setLogLevelFilter("error")}
+                  className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
+                    logLevelFilter === "error"
+                      ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Errors ({run.logs.filter(l => l.level === "error").length})
+                </button>
+                <button
+                  onClick={() => setLogLevelFilter("warn")}
+                  className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
+                    logLevelFilter === "warn"
+                      ? "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Warnings ({run.logs.filter(l => l.level === "warn").length})
+                </button>
+                <button
+                  onClick={() => setLogLevelFilter("info")}
+                  className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
+                    logLevelFilter === "info"
+                      ? "bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300"
+                      : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                  }`}
+                >
+                  Info ({run.logs.filter(l => l.level === "info").length})
+                </button>
+              </div>
+
+              {/* Filtered Logs */}
+              <div className="space-y-1 max-h-96 overflow-y-auto font-mono text-xs">
+                {(() => {
+                  const filteredLogs = logLevelFilter === "all"
+                    ? run.logs
+                    : run.logs.filter(log => log.level === logLevelFilter);
+
+                  return filteredLogs.length === 0 ? (
+                    <p className="text-gray-500 dark:text-gray-400 text-center py-4 font-sans text-sm">
+                      No {logLevelFilter === "all" ? "" : logLevelFilter} logs
+                    </p>
+                  ) : (
+                    filteredLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className={`py-1 px-2 rounded ${
+                          log.level === "error"
+                            ? "bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300"
+                            : log.level === "warn"
+                            ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-300"
+                            : "text-gray-600 dark:text-gray-400"
+                        }`}
+                      >
+                        <span className="text-gray-400 dark:text-gray-500">
+                          {new Date(log.timestamp).toLocaleTimeString()}
+                        </span>{" "}
+                        <span className="font-semibold">[{log.level.toUpperCase()}]</span>{" "}
+                        {log.message}
+                      </div>
+                    ))
+                  );
+                })()}
+              </div>
             </div>
           )}
         </div>
