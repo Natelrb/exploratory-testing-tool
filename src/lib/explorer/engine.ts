@@ -1059,6 +1059,52 @@ export class ExplorationEngine {
     });
   }
 
+  private async closeOverlaysIfPresent() {
+    if (!this.page) return;
+
+    try {
+      // Check for common overlay/modal patterns
+      const overlaySelectors = [
+        '[data-euiportal="true"] .euiOverlayMask', // Elastic UI overlays
+        '.euiFlyout', // Elastic UI flyouts
+        '[role="dialog"]', // ARIA dialogs
+        '.modal', // Generic modals
+        '[class*="overlay"]', // Classes containing "overlay"
+      ];
+
+      for (const selector of overlaySelectors) {
+        const overlay = await this.page.$(selector);
+        if (overlay && await overlay.isVisible()) {
+          this.log("info", `Detected overlay (${selector}), attempting to close`);
+
+          // Try pressing Escape to close
+          await this.page.keyboard.press('Escape');
+          await this.page.waitForTimeout(500);
+
+          // Check if overlay is gone
+          const stillVisible = await overlay.isVisible().catch(() => false);
+          if (!stillVisible) {
+            this.log("info", "Overlay closed successfully");
+            return;
+          }
+
+          // If still there, try clicking close button
+          const closeButtons = await this.page.$$('button[aria-label*="close" i], button[aria-label*="dismiss" i], .euiFlyout__closeButton');
+          for (const btn of closeButtons) {
+            if (await btn.isVisible()) {
+              await btn.click();
+              await this.page.waitForTimeout(500);
+              break;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Silently continue if overlay handling fails
+      this.log("debug", `Overlay handling skipped: ${error instanceof Error ? error.message : "Unknown"}`);
+    }
+  }
+
   private async executeStep(step: { action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }) {
     if (!this.page) return;
 
@@ -1093,11 +1139,24 @@ export class ExplorationEngine {
     const beforePath = await this.takeScreenshot(`action-${this.actionSequence}-${actionName}-before`, beforeDesc);
 
     try {
+      // Try to close any overlays before executing actions
+      await this.closeOverlaysIfPresent();
 
       // Execute the action
       switch (step.action) {
         case "click":
-          await this.page.click(step.target, { timeout: 5000 });
+          try {
+            await this.page.click(step.target, { timeout: 5000 });
+          } catch (clickError) {
+            // If click fails due to overlay, try one more time with force
+            if (clickError instanceof Error && clickError.message.includes('intercepts pointer events')) {
+              this.log("info", "Element blocked by overlay, attempting force click");
+              await this.closeOverlaysIfPresent();
+              await this.page.click(step.target, { timeout: 5000, force: true });
+            } else {
+              throw clickError;
+            }
+          }
           await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
           break;
 
