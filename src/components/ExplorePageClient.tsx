@@ -92,10 +92,16 @@ export default function ExplorePageClient({ initialRuns }: Props) {
       return;
     }
 
+    // Auto-add https:// if no protocol is specified
+    let finalUrl = url.trim();
+    if (!finalUrl.match(/^https?:\/\//i)) {
+      finalUrl = `https://${finalUrl}`;
+    }
+
     startTransition(async () => {
       try {
         const run = await createExplorationRun({
-          url: url.trim(),
+          url: finalUrl,
           aiProvider: aiStatus?.currentProvider.config.provider || "heuristic",
           aiModel: aiStatus?.currentProvider.config.model,
           config: {
@@ -218,10 +224,10 @@ export default function ExplorePageClient({ initialRuns }: Props) {
                 URL to Explore *
               </label>
               <input
-                type="url"
+                type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com"
+                placeholder="example.com"
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white"
                 required
               />
