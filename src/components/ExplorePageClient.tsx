@@ -16,6 +16,15 @@ interface AIStatus {
   hasOpenAIKey: boolean;
 }
 
+interface SavedConfig {
+  id: string;
+  name: string;
+  url: string;
+  username: string | null;
+  password: string | null;
+  description: string | null;
+}
+
 interface Props {
   initialRuns: (ExplorationRun & {
     _count: { actions: number; findings: number; logs: number };
@@ -34,6 +43,8 @@ export default function ExplorePageClient({ initialRuns }: Props) {
   const [runs, setRuns] = useState(initialRuns);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; url: string } | null>(null);
+  const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
+  const [selectedConfig, setSelectedConfig] = useState<string>("");
 
   // Update runs when initialRuns changes (after revalidation)
   useEffect(() => {
@@ -47,7 +58,31 @@ export default function ExplorePageClient({ initialRuns }: Props) {
       .then(setAiStatus)
       .catch(console.error)
       .finally(() => setLoadingAI(false));
+
+    // Fetch saved configurations
+    fetch("/api/configurations")
+      .then((res) => res.json())
+      .then(setSavedConfigs)
+      .catch(console.error);
   }, []);
+
+  const handleConfigSelect = (configId: string) => {
+    setSelectedConfig(configId);
+    if (!configId) {
+      // Reset to empty
+      setUrl("");
+      setUsername("");
+      setPassword("");
+      return;
+    }
+
+    const config = savedConfigs.find((c) => c.id === configId);
+    if (config) {
+      setUrl(config.url);
+      setUsername(config.username || "");
+      setPassword(config.password || "");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -157,6 +192,27 @@ export default function ExplorePageClient({ initialRuns }: Props) {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Saved Configuration Selector */}
+            {savedConfigs.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Load Saved Configuration
+                </label>
+                <select
+                  value={selectedConfig}
+                  onChange={(e) => handleConfigSelect(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white text-sm"
+                >
+                  <option value="">Select a saved configuration...</option>
+                  {savedConfigs.map((config) => (
+                    <option key={config.id} value={config.id}>
+                      {config.name} - {config.url}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 URL to Explore *

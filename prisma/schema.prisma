@@ -111,6 +111,20 @@ model Outcome {
 // AI Exploration Models
 // ============================================
 
+// SavedConfiguration - saved URL/credential combinations for easy reuse
+model SavedConfiguration {
+  id          String   @id @default(cuid())
+  name        String   // Friendly name (e.g., "Staging Environment", "Production")
+  url         String   // Target URL
+  username    String?  // Optional username for login
+  password    String?  // Optional password (stored as-is for now, could encrypt later)
+  description String?  // Optional notes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("saved_configurations")
+}
+
 // ExplorationRun - an AI-powered automated exploration session
 model ExplorationRun {
   id             String    @id @default(cuid())
