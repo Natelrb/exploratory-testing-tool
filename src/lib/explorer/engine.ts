@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { prisma } from "@/lib/db";
 import { explorationManager } from "./manager";
+import { config } from "@/config";
 import fs from "fs/promises";
 import path from "path";
 
@@ -40,7 +41,7 @@ export class ExplorationEngine {
 
   constructor(
     runId: string,
-    config: ExplorationConfig,
+    explorationConfig: ExplorationConfig,
     aiConfig: AIConfig,
     callbacks: ExplorationCallbacks = {},
     savedPlan?: Array<{ area: string; steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }> }>
@@ -48,10 +49,10 @@ export class ExplorationEngine {
     this.runId = runId;
     this.config = {
       headless: true,
-      viewport: { width: 1920, height: 1080 },
-      timeout: 30000,
-      maxActions: 50, // Increased for more thorough exploration
-      ...config,
+      viewport: config.exploration.defaultViewport,
+      timeout: config.exploration.defaultTimeout,
+      maxActions: config.exploration.defaultMaxActions,
+      ...explorationConfig,
     };
     this.aiConfig = aiConfig;
     this.aiProvider = createAIProvider(aiConfig);
@@ -1166,7 +1167,7 @@ export class ExplorationEngine {
 
       // Track consecutive failures for this plan
       let consecutiveFailures = 0;
-      const maxConsecutiveFailures = 5;
+      const maxConsecutiveFailures = config.exploration.maxConsecutiveFailures;
 
       for (const step of plan.steps) {
         if (actionsExecuted >= maxActions) break;
@@ -1482,7 +1483,9 @@ export class ExplorationEngine {
 
       // Check if selector exists on the page
       try {
-        const elementExists = await this.page.locator(step.target).count({ timeout: 2000 }) > 0;
+        const elementExists = await this.page.locator(step.target).count({
+          timeout: config.exploration.selectorValidationTimeout
+        }) > 0;
         if (elementExists) {
           validSteps.push(step);
         } else {
@@ -1812,7 +1815,7 @@ export class ExplorationEngine {
       await this.page.screenshot({
         path: filepath,
         fullPage: false,  // Just viewport - much faster
-        timeout: 15000,   // 15 second timeout
+        timeout: config.exploration.screenshotTimeout,
       });
 
       // Save to database with human-readable description
