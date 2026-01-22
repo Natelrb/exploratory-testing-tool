@@ -36,10 +36,20 @@ export default function ConfigurationsPageClient() {
   const fetchConfigs = async () => {
     try {
       const res = await fetch("/api/configurations");
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
       const data = await res.json();
-      setConfigs(data);
+      // Ensure data is an array
+      if (Array.isArray(data)) {
+        setConfigs(data);
+      } else {
+        console.error("API returned non-array data:", data);
+        setConfigs([]);
+      }
     } catch (error) {
       console.error("Failed to fetch configurations:", error);
+      setConfigs([]);
     } finally {
       setLoading(false);
     }
