@@ -800,6 +800,9 @@ export class ExplorationEngine {
   }
 
   private async saveInitialFindings(pageAnalysis: PageAnalysis) {
+    // Take a screenshot for initial findings evidence
+    const initialScreenshot = await this.takeScreenshot("initial-findings", "Initial page state for findings");
+
     // Save any issues identified during initial page analysis
     for (const issue of pageAnalysis.issues) {
       await this.recordFinding({
@@ -810,7 +813,7 @@ export class ExplorationEngine {
         recommendation: issue.type === "accessibility"
           ? "Review and fix accessibility issues per WCAG guidelines"
           : "Investigate and address this potential issue",
-      });
+      }, initialScreenshot); // Attach screenshot as evidence
     }
 
     // Check for common issues that weren't explicitly flagged
@@ -863,7 +866,7 @@ export class ExplorationEngine {
         title: `${imagesWithoutAlt.length} image(s) missing alt text`,
         description: `Found ${imagesWithoutAlt.length} images without alt attributes, which affects screen reader users:\n  - ${imageList}${moreText}`,
         recommendation: "Add descriptive alt text to all images for better accessibility.",
-      });
+      }, initialScreenshot);
     }
 
     // Forms without proper labels
@@ -884,7 +887,7 @@ export class ExplorationEngine {
         title: "Form fields missing labels",
         description: `Some form fields are missing associated labels, which affects accessibility:\n  - ${fieldList}`,
         recommendation: "Add proper <label> elements or aria-label attributes to all form fields.",
-      });
+      }, initialScreenshot);
     }
   }
 
@@ -1504,6 +1507,9 @@ export class ExplorationEngine {
   }
 
   private async generateSummaryFinding(plans: Array<{ area: string; steps: Array<unknown> }>) {
+    // Take final screenshot for summary evidence
+    const finalScreenshot = await this.takeScreenshot("final-summary", "Final page state for summary");
+
     // Count various metrics
     const consoleErrors = this.consoleMessages.filter(m => m.type === "error").length;
     const consoleWarnings = this.consoleMessages.filter(m => m.type === "warn").length;
@@ -1536,7 +1542,7 @@ export class ExplorationEngine {
       recommendation: consoleErrors > 0 || failedRequests > 0
         ? "Review the console logs and network traffic for details on the detected issues."
         : "Review the evidence collected for any subtle issues not automatically detected.",
-    });
+    }, finalScreenshot);
   }
 
   private async complete(status: "completed" | "failed") {

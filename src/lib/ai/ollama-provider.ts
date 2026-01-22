@@ -135,6 +135,12 @@ URL: ${url}
 HTML:
 ${this.truncateHTML(html)}
 
+IMPORTANT: For potentialRisks and accessibilityNotes, be SPECIFIC:
+- Include actual CSS selectors or element IDs where issues exist
+- Mention specific field names, button labels, or section identifiers
+- Provide concrete examples rather than general statements
+- If you can't be specific, omit the item
+
 JSON structure (keep arrays to max 5 items):
 {
   "appType": "app type",
@@ -143,8 +149,8 @@ JSON structure (keep arrays to max 5 items):
   "navigation": [{"label": "text", "selector": "css", "type": "main|secondary", "hasSubmenu": false}],
   "forms": [{"purpose": "desc", "selector": "css", "fields": [{"name": "n", "type": "t", "selector": "css", "required": false}], "submitSelector": "css"}],
   "interactiveElements": [{"description": "desc", "selector": "css", "type": "button|link", "importance": "high|medium|low"}],
-  "potentialRisks": ["risk"],
-  "accessibilityNotes": ["note"]
+  "potentialRisks": ["Specific risk with element identifier (e.g., 'Search button #search-btn has no keyboard shortcut')"],
+  "accessibilityNotes": ["Specific issue with selector (e.g., 'Button .close-modal missing aria-label')"]
 }`;
 
     const response = await this.chat(prompt, systemPrompt);
@@ -299,13 +305,19 @@ Context: ${context}
 Observations:
 ${observations.map((o, i) => `${i + 1}. ${o}`).join("\n")}
 
+IMPORTANT: Make descriptions SPECIFIC and ACTIONABLE:
+- Include exact error messages, URLs, or selectors from the observations
+- Reference specific observation numbers
+- Provide concrete details that help locate the issue
+- Bad: "There might be an error" | Good: "Console error 'undefined is not a function' at line 42 in app.js"
+
 Respond with a JSON array of issues:
 [
   {
     "type": "bug|ux|accessibility|security|performance",
     "severity": "critical|high|medium|low|info",
     "title": "Short issue title",
-    "description": "Detailed description",
+    "description": "Specific description with evidence from observations (include URLs, error messages, selectors)",
     "recommendation": "How to fix or investigate"
   }
 ]
