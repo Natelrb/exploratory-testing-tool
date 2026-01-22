@@ -359,7 +359,15 @@ export class ExplorationEngine {
       await this.page.waitForTimeout(2000);
       await this.takeScreenshot("03-after-login", "After login completed");
 
-      this.log("info", `Login completed, current URL: ${this.page.url()}`);
+      // Verify login was successful by checking if we're still on auth page
+      const currentUrl = this.page.url();
+      const stillHasPassword = await this.page.$('input[type="password"]').then(el => !!el);
+
+      if (stillHasPassword) {
+        this.log("warn", `Login may have failed - still on authentication page: ${currentUrl}`);
+      } else {
+        this.log("info", `Login appears successful, current URL: ${currentUrl}`);
+      }
     } catch (error) {
       this.log("warn", `Login attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`);
       await this.takeScreenshot("02-login-failed", "Login attempt failed");
@@ -1095,6 +1103,15 @@ export class ExplorationEngine {
   private async executeExploration(plans: Array<{ area: string; steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }> }>) {
     if (!this.page) return;
 
+    // Check page state before starting exploration
+    const initialState = await this.validatePageState();
+    if (!initialState.isValid) {
+      this.log("error", `Cannot proceed with exploration: ${initialState.reason}`);
+      await this.takeScreenshot("exploration-blocked", "Exploration blocked by page state");
+      // Don't throw error, just skip exploration and complete gracefully
+      return;
+    }
+
     let actionsExecuted = 0;
     const maxActions = this.config.maxActions!;
     const totalPlannedActions = Math.min(
@@ -1112,9 +1129,27 @@ export class ExplorationEngine {
       await this.updateProgress(areaProgress, `Exploring: ${plan.area}`);
       this.log("info", `Exploring area: ${plan.area}`);
 
+      // Track consecutive failures for this plan
+      let consecutiveFailures = 0;
+      const maxConsecutiveFailures = 5;
+
       for (const step of plan.steps) {
         if (actionsExecuted >= maxActions) break;
         if (this.shouldStop()) break;
+
+        // Check if we've hit too many consecutive failures - abort this plan
+        if (consecutiveFailures >= maxConsecutiveFailures) {
+          this.log("warn", `Aborting plan "${plan.area}" after ${consecutiveFailures} consecutive failures`);
+          break;
+        }
+
+        // Validate page state before executing step
+        const pageState = await this.validatePageState();
+        if (!pageState.isValid) {
+          this.log("warn", `Skipping plan "${plan.area}" - ${pageState.reason}`);
+          consecutiveFailures = maxConsecutiveFailures; // Force skip rest of plan
+          break;
+        }
 
         // Update progress before action (shows what's currently running)
         const progress = 45 + Math.floor((actionsExecuted / totalPlannedActions) * 45);
@@ -1126,9 +1161,11 @@ export class ExplorationEngine {
         try {
           await this.executeStep(step);
           actionsExecuted++;
+          consecutiveFailures = 0; // Reset on success
         } catch (error) {
           this.log("warn", `Step failed: ${step.description} - ${error instanceof Error ? error.message : "Unknown"}`);
           actionsExecuted++; // Still count failed actions
+          consecutiveFailures++; // Increment failure counter
         }
       }
     }
@@ -1183,6 +1220,91 @@ export class ExplorationEngine {
       // Silently continue if overlay handling fails
       this.log("debug", `Overlay handling skipped: ${error instanceof Error ? error.message : "Unknown"}`);
     }
+  }
+
+  private async validatePageState(): Promise<{ isValid: boolean; reason?: string }> {
+    if (!this.page) return { isValid: false, reason: "Page not initialized" };
+
+    const currentUrl = this.page.url();
+    const pageTitle = await this.page.title().catch(() => "");
+
+    // Check if we've been redirected to an authentication page
+    const authPatterns = [
+      /login/i,
+      /sign-?in/i,
+      /auth/i,
+      /authenticate/i,
+      /accounts\.google/i,
+      /login\.microsoftonline/i,
+      /okta\.com/i,
+      /auth0\.com/i,
+    ];
+
+    const isAuthUrl = authPatterns.some(pattern => pattern.test(currentUrl));
+    const isAuthTitle = authPatterns.some(pattern => pattern.test(pageTitle));
+
+    if (isAuthUrl || isAuthTitle) {
+      // Check if we have credentials configured
+      if (!this.config.username || !this.config.password) {
+        return {
+          isValid: false,
+          reason: `Authentication required at ${currentUrl} but no credentials provided. Use saved configurations to provide login details.`,
+        };
+      }
+
+      // If we have credentials, check if we're still on auth page (login might have failed)
+      const hasPasswordField = await this.page.$('input[type="password"]').then(el => !!el);
+      if (hasPasswordField) {
+        return {
+          isValid: false,
+          reason: `Login appears to have failed or requires additional verification. Still on authentication page: ${currentUrl}`,
+        };
+      }
+    }
+
+    // Check for error pages
+    const errorPatterns = [
+      /error/i,
+      /404/,
+      /403/,
+      /500/,
+      /not.?found/i,
+      /access.?denied/i,
+      /unavailable/i,
+    ];
+
+    const isErrorUrl = errorPatterns.some(pattern => pattern.test(currentUrl));
+    const isErrorTitle = errorPatterns.some(pattern => pattern.test(pageTitle));
+
+    if (isErrorUrl || isErrorTitle) {
+      return {
+        isValid: false,
+        reason: `Encountered error page: ${pageTitle} (${currentUrl})`,
+      };
+    }
+
+    // Check for CAPTCHA or bot detection
+    const hasCaptcha = await this.page.evaluate(() => {
+      const captchaSelectors = [
+        '#g-recaptcha',
+        '.g-recaptcha',
+        '[data-sitekey]',
+        'iframe[src*="recaptcha"]',
+        'iframe[src*="captcha"]',
+        '[class*="captcha"]',
+        '[id*="captcha"]',
+      ];
+      return captchaSelectors.some(selector => !!document.querySelector(selector));
+    });
+
+    if (hasCaptcha) {
+      return {
+        isValid: false,
+        reason: "CAPTCHA or bot detection encountered - cannot proceed with automated testing",
+      };
+    }
+
+    return { isValid: true };
   }
 
   private async executeStep(step: { action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }) {
