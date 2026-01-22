@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
+
+# Database
+*.db
+*.db-journal
+
+# Evidence files (screenshots, logs from explorations)
+/public/evidence/

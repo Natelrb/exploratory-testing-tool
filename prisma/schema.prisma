@@ -1,0 +1,226 @@
+// Prisma schema for Exploratory Testing Session Tool
+// Database: SQLite
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ProductArea - represents a feature area or module being tested
+model ProductArea {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  tags        String?   // Stored as comma-separated values for SQLite simplicity
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  charters    Charter[]
+
+  @@map("product_areas")
+}
+
+// Build - represents a specific version/deployment being tested
+model Build {
+  id          String    @id @default(cuid())
+  environment String    // local | staging | prod-like
+  version     String    // e.g., commit SHA, version number
+  deployedAt  DateTime?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  sessions    Session[]
+
+  @@map("builds")
+}
+
+// Charter - the mission/focus for an exploratory session
+model Charter {
+  id            String      @id @default(cuid())
+  mission       String      // What are we exploring?
+  riskFocus     String?     // What risk are we trying to uncover?
+  scope         String?     // What's in scope?
+  constraints   String?     // What limitations or boundaries?
+  isTemplate    Boolean     @default(false)
+  productArea   ProductArea? @relation(fields: [productAreaId], references: [id])
+  productAreaId String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  sessions      Session[]
+
+  @@map("charters")
+}
+
+// Session - an actual exploratory testing session
+model Session {
+  id              String    @id @default(cuid())
+  charter         Charter   @relation(fields: [charterId], references: [id])
+  charterId       String
+  build           Build?    @relation(fields: [buildId], references: [id])
+  buildId         String?
+  testerName      String
+  startTime       DateTime  @default(now())
+  endTime         DateTime?
+  timeboxMinutes  Int       @default(30)
+  status          String    @default("active") // active | completed
+
+  // Debrief fields
+  whatWasCovered    String?
+  whatWasNotCovered String?
+  keyRisks          String?
+  obstacles         String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  notes           Note[]
+  explorationRuns ExplorationRun[]
+
+  @@map("sessions")
+}
+
+// Note - observations, questions, bugs, etc. captured during a session
+model Note {
+  id        String    @id @default(cuid())
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId String
+  type      String    // observation | question | risk | bug | follow_up
+  text      String
+  createdAt DateTime  @default(now())
+  outcomes  Outcome[]
+  explorationFindings ExplorationFinding[]
+
+  @@map("notes")
+}
+
+// Outcome - what action was taken based on a note
+model Outcome {
+  id           String   @id @default(cuid())
+  note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  noteId       String
+  outcomeType  String   // ticket | new_charter | automation_idea
+  externalLink String?  // Link to Jira ticket, GitHub issue, etc.
+  description  String?  // Additional context about the outcome
+  createdAt    DateTime @default(now())
+
+  @@map("outcomes")
+}
+
+// ============================================
+// AI Exploration Models
+// ============================================
+
+// ExplorationRun - an AI-powered automated exploration session
+model ExplorationRun {
+  id             String    @id @default(cuid())
+  url            String    // Target URL to explore
+  status         String    @default("pending") // pending | running | paused | completed | failed
+  aiProvider     String    @default("heuristic") // heuristic | ollama | anthropic | openai
+  aiModel        String?   // Model name if applicable
+
+  // Configuration (stored as JSON strings for SQLite)
+  config         String?   // JSON: ExplorationConfig
+  charter        String?   // JSON: Generated test charter
+
+  // Progress tracking
+  currentStep    String?
+  progress       Int       @default(0) // 0-100
+  totalActions   Int       @default(0)
+  completedActions Int     @default(0)
+
+  // Timing
+  startTime      DateTime?
+  endTime        DateTime?
+
+  // Link to manual session (optional - to review findings)
+  session        Session?  @relation(fields: [sessionId], references: [id])
+  sessionId      String?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  actions        ExplorationAction[]
+  findings       ExplorationFinding[]
+  evidence       ExplorationEvidence[]
+  logs           ExplorationLog[]
+
+  @@map("exploration_runs")
+}
+
+// ExplorationAction - individual action taken during exploration
+model ExplorationAction {
+  id              String         @id @default(cuid())
+  run             ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId           String
+  sequence        Int            // Order of execution
+  actionType      String         // click | fill | select | hover | scroll | navigate | wait | assert
+  target          String?        // CSS selector or description
+  value           String?        // Value for fill/select actions
+  description     String         // Human-readable description
+
+  // Results
+  status          String         @default("pending") // pending | running | success | failed | skipped
+  error           String?        // Error message if failed
+  duration        Int?           // Milliseconds
+  observations    String?        // JSON array of observations
+
+  // Screenshots
+  beforeScreenshot String?       // Path to before screenshot
+  afterScreenshot  String?       // Path to after screenshot
+
+  createdAt       DateTime       @default(now())
+
+  @@map("exploration_actions")
+}
+
+// ExplorationFinding - issues or observations found during exploration
+model ExplorationFinding {
+  id              String         @id @default(cuid())
+  run             ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId           String
+  type            String         // bug | risk | observation | accessibility | security | ux
+  severity        String         // critical | high | medium | low | info
+  title           String
+  description     String
+  location        String?        // URL or selector where found
+  evidence        String?        // JSON array of evidence paths
+  stepsToReproduce String?       // JSON array of steps
+  recommendation  String?
+
+  // Link to manual note (if converted)
+  note            Note?          @relation(fields: [noteId], references: [id])
+  noteId          String?
+
+  createdAt       DateTime       @default(now())
+
+  @@map("exploration_findings")
+}
+
+// ExplorationEvidence - captured artifacts (screenshots, logs, etc.)
+model ExplorationEvidence {
+  id              String         @id @default(cuid())
+  run             ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId           String
+  type            String         // screenshot | video | network | console | html
+  path            String         // File path
+  description     String
+  metadata        String?        // JSON: additional metadata
+  timestamp       DateTime       @default(now())
+
+  @@map("exploration_evidence")
+}
+
+// ExplorationLog - log entries during exploration
+model ExplorationLog {
+  id              String         @id @default(cuid())
+  run             ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId           String
+  level           String         // info | warn | error | debug
+  message         String
+  data            String?        // JSON: additional data
+  timestamp       DateTime       @default(now())
+
+  @@map("exploration_logs")
+}
