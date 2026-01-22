@@ -10,6 +10,7 @@ import type {
   NetworkResponse,
 } from "./types";
 import { prisma } from "@/lib/db";
+import { explorationManager } from "./manager";
 import fs from "fs/promises";
 import path from "path";
 
@@ -77,11 +78,17 @@ export class ExplorationEngine {
       await this.updateProgress(2, "Setting up browser");
       await this.setup();
 
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
       await this.updateProgress(5, "Navigating to URL");
       await this.navigate();
 
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
       await this.updateProgress(15, "Analyzing page structure");
       const pageAnalysis = await this.analyzePage();
+
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
 
       await this.updateProgress(22, "Checking for accessibility issues");
       await this.saveInitialFindings(pageAnalysis);
@@ -90,11 +97,17 @@ export class ExplorationEngine {
       const charter = await this.generateCharter(pageAnalysis);
       await this.saveCharter(charter);
 
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
       await this.updateProgress(35, "Planning exploration strategy");
       const plan = await this.planExploration(pageAnalysis, charter);
 
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
       await this.updateProgress(40, "Starting exploration");
       await this.executeExploration(plan);
+
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
 
       await this.updateProgress(92, "Collecting console logs");
       await this.collectFinalEvidence();
@@ -106,9 +119,11 @@ export class ExplorationEngine {
 
       await this.complete("completed");
     } catch (error) {
-      this.log("error", `Exploration failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      const isStopped = message.includes("stopped by user");
+      this.log(isStopped ? "info" : "error", `Exploration ${isStopped ? "stopped" : "failed"}: ${message}`);
       await this.complete("failed");
-      throw error;
+      if (!isStopped) throw error;
     } finally {
       await this.cleanup();
     }
@@ -116,6 +131,9 @@ export class ExplorationEngine {
 
   private async setup(): Promise<void> {
     this.log("info", "Setting up browser");
+
+    // Register with exploration manager
+    explorationManager.register(this.runId);
 
     // Create evidence directory
     await fs.mkdir(this.evidenceDir, { recursive: true });
@@ -125,6 +143,9 @@ export class ExplorationEngine {
     this.browser = await chromium.launch({
       headless: this.config.headless,
     });
+
+    // Register browser with manager so it can be force-closed on stop
+    explorationManager.setBrowser(this.runId, this.browser);
 
     this.context = await this.browser.newContext({
       viewport: this.config.viewport,
@@ -413,12 +434,50 @@ export class ExplorationEngine {
       }> = [];
 
       document.querySelectorAll("form").forEach((form, formIndex) => {
+        // Generate better form selector
+        const generateFormSelector = (formEl: HTMLFormElement, idx: number): string => {
+          if (formEl.id) return `#${formEl.id}`;
+          if (formEl.name) return `form[name="${formEl.name}"]`;
+          if (formEl.className) {
+            const classes = formEl.className.split(' ').filter(c => c.trim());
+            if (classes.length > 0) {
+              return 'form.' + classes.join('.');
+            }
+          }
+          return `form:nth-of-type(${idx + 1})`;
+        };
+
+        const formSelector = generateFormSelector(form, formIndex);
+
         const fields = Array.from(form.querySelectorAll("input, select, textarea")).map(
-          (field, fieldIndex) => {
+          (field) => {
             const input = field as HTMLInputElement;
             const label = form.querySelector(`label[for="${input.id}"]`)?.textContent?.trim();
+
+            // Generate better field selector - priority order
+            let fieldSelector: string;
+            if (input.id) {
+              fieldSelector = `#${input.id}`;
+            } else if (input.name) {
+              // Use name attribute - very common and reliable for forms
+              fieldSelector = `${formSelector} [name="${input.name}"]`;
+            } else if (input.placeholder) {
+              // Use placeholder as selector
+              fieldSelector = `${formSelector} [placeholder="${input.placeholder}"]`;
+            } else if (input.type) {
+              // Use type within the form
+              const typeInputs = form.querySelectorAll(`[type="${input.type}"]`);
+              const typeIndex = Array.from(typeInputs).indexOf(input);
+              fieldSelector = `${formSelector} [type="${input.type}"]:nth-of-type(${typeIndex + 1})`;
+            } else {
+              // Last resort: use tag name with index
+              const tagInputs = form.querySelectorAll(input.tagName.toLowerCase());
+              const tagIndex = Array.from(tagInputs).indexOf(input);
+              fieldSelector = `${formSelector} ${input.tagName.toLowerCase()}:nth-of-type(${tagIndex + 1})`;
+            }
+
             return {
-              selector: input.id ? `#${input.id}` : `form:nth-of-type(${formIndex + 1}) *:nth-of-type(${fieldIndex + 1})`,
+              selector: fieldSelector,
               name: input.name || undefined,
               type: input.type || "text",
               label,
@@ -431,12 +490,12 @@ export class ExplorationEngine {
         const submitBtn = form.querySelector('button[type="submit"], input[type="submit"]') as HTMLElement | null;
 
         forms.push({
-          selector: form.id ? `#${form.id}` : `form:nth-of-type(${formIndex + 1})`,
+          selector: formSelector,
           action: form.action || undefined,
           method: form.method || undefined,
           fields,
           submitButton: submitBtn ? {
-            selector: submitBtn.id ? `#${submitBtn.id}` : `form:nth-of-type(${formIndex + 1}) button[type="submit"]`,
+            selector: submitBtn.id ? `#${submitBtn.id}` : `${formSelector} button[type="submit"]`,
             tagName: submitBtn.tagName,
             text: submitBtn.textContent?.trim(),
             isVisible: submitBtn.offsetParent !== null,
@@ -497,15 +556,72 @@ export class ExplorationEngine {
         isEnabled: boolean;
       }> = [];
 
+      // Helper function to generate a unique, robust selector for an element
+      const generateSelector = (el: HTMLElement): string => {
+        // Priority 1: Use ID if available (most reliable)
+        if (el.id) {
+          return `#${el.id}`;
+        }
+
+        // Priority 2: Use data-testid or data-test attributes if available
+        const testId = el.getAttribute('data-testid') || el.getAttribute('data-test');
+        if (testId) {
+          return `[data-testid="${testId}"]`;
+        }
+
+        // Priority 3: Use unique class combination if available
+        if (el.className && typeof el.className === 'string') {
+          const classes = el.className.split(' ').filter(c => c.trim());
+          if (classes.length > 0) {
+            const classSelector = '.' + classes.join('.');
+            // Check if this class combination is unique
+            if (document.querySelectorAll(classSelector).length === 1) {
+              return classSelector;
+            }
+          }
+        }
+
+        // Priority 4: Build a path using tag + text content for buttons/links
+        const text = el.textContent?.trim() || '';
+        if (text && text.length < 50 && (el.tagName === 'BUTTON' || el.tagName === 'A')) {
+          const escapedText = text.replace(/"/g, '\\"');
+          const textSelector = `${el.tagName.toLowerCase()}:has-text("${escapedText}")`;
+          return textSelector;
+        }
+
+        // Priority 5: Use aria-label if available
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) {
+          return `[aria-label="${ariaLabel}"]`;
+        }
+
+        // Fallback: Build a more specific nth-child selector with parent context
+        let path = el.tagName.toLowerCase();
+        let current: Element | null = el;
+        let parent = current.parentElement;
+
+        if (parent) {
+          const siblings = Array.from(parent.children).filter(
+            child => child.tagName === current!.tagName
+          );
+          const index = siblings.indexOf(current);
+          if (index >= 0) {
+            path = `${parent.tagName.toLowerCase()} > ${path}:nth-of-type(${index + 1})`;
+          }
+        }
+
+        return path;
+      };
+
       const selectors = ["button", 'a[href]', 'input[type="submit"]', "[onclick]", "[data-toggle]"];
 
       for (const selector of selectors) {
-        document.querySelectorAll(selector).forEach((el, index) => {
+        document.querySelectorAll(selector).forEach((el) => {
           const htmlEl = el as HTMLElement;
           const text = htmlEl.textContent?.trim() || "";
           if (text.length < 100) {
             elements.push({
-              selector: `${selector}:nth-of-type(${index + 1})`,
+              selector: generateSelector(htmlEl),
               tagName: htmlEl.tagName,
               type: (htmlEl as HTMLInputElement).type || undefined,
               text: text || undefined,
@@ -909,6 +1025,7 @@ export class ExplorationEngine {
     for (let planIndex = 0; planIndex < plans.length; planIndex++) {
       const plan = plans[planIndex];
       if (actionsExecuted >= maxActions) break;
+      if (this.shouldStop()) break;
 
       // Update progress for new area
       const areaProgress = 42 + Math.floor((planIndex / plans.length) * 5);
@@ -917,6 +1034,7 @@ export class ExplorationEngine {
 
       for (const step of plan.steps) {
         if (actionsExecuted >= maxActions) break;
+        if (this.shouldStop()) break;
 
         // Update progress before action (shows what's currently running)
         const progress = 45 + Math.floor((actionsExecuted / totalPlannedActions) * 45);
@@ -1268,7 +1386,7 @@ export class ExplorationEngine {
   private async generateSummaryFinding(plans: Array<{ area: string; steps: Array<unknown> }>) {
     // Count various metrics
     const consoleErrors = this.consoleMessages.filter(m => m.type === "error").length;
-    const consoleWarnings = this.consoleMessages.filter(m => m.type === "warning").length;
+    const consoleWarnings = this.consoleMessages.filter(m => m.type === "warn").length;
     const failedRequests = this.networkResponses.filter(r => r.status >= 400).length;
     const totalAreas = plans.length;
     const totalPlannedSteps = plans.reduce((sum, p) => sum + p.steps.length, 0);
@@ -1322,12 +1440,19 @@ export class ExplorationEngine {
   }
 
   private async cleanup() {
+    // Unregister from manager
+    explorationManager.unregister(this.runId);
+
     if (this.browser) {
-      await this.browser.close();
+      await this.browser.close().catch(() => {});  // May already be closed by manager
       this.browser = null;
       this.context = null;
       this.page = null;
     }
+  }
+
+  private shouldStop(): boolean {
+    return explorationManager.shouldStop(this.runId);
   }
 
   // Static method to start exploration (can be called from API route)

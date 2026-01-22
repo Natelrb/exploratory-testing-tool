@@ -25,7 +25,7 @@ export class OllamaProvider implements AIProvider {
       baseUrl: "http://localhost:11434",
       model: "qwen2.5:14b",
       temperature: 0.7,
-      maxTokens: 4096,
+      maxTokens: 16384, // Increased to prevent truncation
       ...config,
     };
   }
@@ -60,78 +60,91 @@ export class OllamaProvider implements AIProvider {
   private extractJSON<T>(text: string): T {
     // Try to extract JSON from markdown code blocks or raw text
     const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+    let jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
 
     // Try to find JSON object or array
     const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
     const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
 
-    const finalJson = objectMatch?.[0] || arrayMatch?.[0] || jsonStr;
+    let finalJson = objectMatch?.[0] || arrayMatch?.[0] || jsonStr;
 
+    // First attempt: parse as-is
     try {
       return JSON.parse(finalJson) as T;
-    } catch {
-      throw new Error(`Failed to parse JSON from response: ${text.substring(0, 200)}...`);
+    } catch (firstError) {
+      // Second attempt: try to repair common issues
+      try {
+        // Remove trailing commas before closing brackets
+        let repaired = finalJson.replace(/,\s*([\]}])/g, '$1');
+
+        // Fix truncated strings - look for unclosed quotes
+        const truncatedStringMatch = repaired.match(/"[^"]*$/);
+        if (truncatedStringMatch) {
+          // Find the last complete key-value pair
+          const lastCompleteComma = repaired.lastIndexOf('",');
+          const lastCompleteBrace = repaired.lastIndexOf('}');
+          const lastCompleteBracket = repaired.lastIndexOf(']');
+
+          // Use the most recent complete structure
+          const lastGoodIndex = Math.max(lastCompleteComma, lastCompleteBrace, lastCompleteBracket);
+
+          if (lastGoodIndex > 0) {
+            // Truncate to last good point
+            if (lastCompleteComma === lastGoodIndex) {
+              repaired = repaired.substring(0, lastCompleteComma + 2);
+            } else {
+              repaired = repaired.substring(0, lastGoodIndex + 1);
+            }
+          }
+        }
+
+        // Remove any trailing incomplete tokens
+        repaired = repaired.replace(/,\s*$/, '');
+
+        // Try to close unclosed brackets/braces
+        const openBraces = (repaired.match(/\{/g) || []).length;
+        const closeBraces = (repaired.match(/\}/g) || []).length;
+        const openBrackets = (repaired.match(/\[/g) || []).length;
+        const closeBrackets = (repaired.match(/\]/g) || []).length;
+
+        // Add missing closing brackets/braces
+        repaired += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
+        repaired += '}'.repeat(Math.max(0, openBraces - closeBraces));
+
+        return JSON.parse(repaired) as T;
+      } catch {
+        // Log more details for debugging
+        console.error('JSON parse failed. Response length:', text.length);
+        console.error('First 300 chars:', text.substring(0, 300));
+        console.error('Last 300 chars:', text.substring(Math.max(0, text.length - 300)));
+        throw new Error(`Failed to parse JSON from response: ${text.substring(0, 200)}...`);
+      }
     }
   }
 
   async analyzePageStructure(html: string, url: string): Promise<PageStructureAnalysis> {
     const systemPrompt = `You are an expert QA engineer analyzing web pages for exploratory testing.
 Analyze the HTML structure and identify testable areas, forms, navigation, and potential risks.
-Always respond with valid JSON only, no markdown or explanations.`;
+CRITICAL: Respond with valid JSON only. No markdown, no code blocks, no explanations.
+Keep arrays short (max 5 items each) to ensure complete response.`;
 
-    const prompt = `Analyze this web page structure and provide a JSON response:
+    const prompt = `Analyze this web page and respond with JSON only:
 
 URL: ${url}
 
-HTML (truncated to key elements):
+HTML:
 ${this.truncateHTML(html)}
 
-Respond with this exact JSON structure:
+JSON structure (keep arrays to max 5 items):
 {
-  "appType": "string describing app type (e.g., e-commerce, dashboard, blog)",
-  "primaryPurpose": "what this page is for",
-  "keyAreas": [
-    {
-      "name": "area name",
-      "description": "what this area does",
-      "importance": "high|medium|low",
-      "suggestedTests": ["test idea 1", "test idea 2"]
-    }
-  ],
-  "navigation": [
-    {
-      "label": "nav item text",
-      "selector": "CSS selector",
-      "type": "main|secondary|footer|breadcrumb",
-      "hasSubmenu": true/false
-    }
-  ],
-  "forms": [
-    {
-      "purpose": "what the form does",
-      "selector": "CSS selector",
-      "fields": [
-        {
-          "name": "field name",
-          "type": "text|email|password|etc",
-          "selector": "CSS selector",
-          "required": true/false
-        }
-      ],
-      "submitSelector": "CSS selector for submit button"
-    }
-  ],
-  "interactiveElements": [
-    {
-      "description": "what this element does",
-      "selector": "CSS selector",
-      "type": "button|link|input|dropdown|modal-trigger|other",
-      "importance": "high|medium|low"
-    }
-  ],
-  "potentialRisks": ["risk 1", "risk 2"],
-  "accessibilityNotes": ["note 1", "note 2"]
+  "appType": "app type",
+  "primaryPurpose": "page purpose",
+  "keyAreas": [{"name": "area", "description": "desc", "importance": "high|medium|low", "suggestedTests": ["test1"]}],
+  "navigation": [{"label": "text", "selector": "css", "type": "main|secondary", "hasSubmenu": false}],
+  "forms": [{"purpose": "desc", "selector": "css", "fields": [{"name": "n", "type": "t", "selector": "css", "required": false}], "submitSelector": "css"}],
+  "interactiveElements": [{"description": "desc", "selector": "css", "type": "button|link", "importance": "high|medium|low"}],
+  "potentialRisks": ["risk"],
+  "accessibilityNotes": ["note"]
 }`;
 
     const response = await this.chat(prompt, systemPrompt);
@@ -197,29 +210,29 @@ ${JSON.stringify(pageAnalysis.interactiveElements.slice(0, 20), null, 2)}
 Forms on page:
 ${JSON.stringify(pageAnalysis.forms, null, 2)}
 
-IMPORTANT: Focus on concrete, clickable elements with specific CSS selectors. Avoid abstract keyboard navigation tests - use direct click actions instead.
+CRITICAL RULES:
+- You MUST use ONLY the "selector" values from the "Available elements" and "Forms" lists above
+- DO NOT invent or make up any selectors, especially data-testid attributes
+- DO NOT use generic selectors like button:nth-of-type(N)
+- If you cannot find a suitable element in the provided lists, skip that test step
+- Maximum 3 steps per plan to keep response concise
 
-Respond with this exact JSON structure:
+Respond with this exact JSON structure (keep it concise):
 {
-  "objective": "What we want to learn from exploring this area",
+  "objective": "Brief objective (one sentence)",
   "steps": [
     {
       "action": "click|fill|select|hover|scroll|wait",
-      "target": "Specific CSS selector like #id, .class, or [data-testid='x'] - NOT generic selectors like button:nth-of-type(N)",
-      "value": "value to fill (if applicable)",
-      "description": "Human-readable step description (what action we're taking)",
-      "expectedOutcome": "What should happen",
+      "target": "EXACT selector from Available elements list above",
+      "value": "value (if action is fill)",
+      "description": "Brief step description",
+      "expectedOutcome": "Brief expected outcome",
       "riskLevel": "safe|moderate|risky"
     }
   ],
-  "expectedFindings": ["what we might discover"],
-  "risks": ["potential issues with this plan"]
-}
-
-Rules:
-- Use SPECIFIC selectors from the Available elements list, not generic nth-of-type selectors
-- Keep steps to direct interactions (click, fill) not keyboard navigation
-- Maximum 5 steps per plan`;
+  "expectedFindings": ["finding1", "finding2"],
+  "risks": ["risk1"]
+}`;
 
     const response = await this.chat(prompt, systemPrompt);
     return this.extractJSON<ExplorationPlanResult>(response);

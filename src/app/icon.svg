@@ -1,0 +1,10 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Magnifying glass handle -->
+  <path d="M28 28L22 22" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Magnifying glass circle -->
+  <circle cx="14" cy="14" r="9" stroke="#2563eb" stroke-width="3" fill="white"/>
+
+  <!-- Inner reflection/shine -->
+  <path d="M10 10L12 12" stroke="#93c5fd" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+</svg>
