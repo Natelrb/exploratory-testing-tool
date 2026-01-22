@@ -59,10 +59,18 @@ export class OllamaProvider implements AIProvider {
 
   private extractJSON<T>(text: string): T {
     // Try to extract JSON from markdown code blocks or raw text
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    let jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+    let jsonStr = text.trim();
 
-    // Try to find JSON object or array
+    // Remove markdown code blocks if present (handle multiple formats)
+    const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    }
+
+    // Remove any leading/trailing non-JSON text
+    jsonStr = jsonStr.replace(/^[^{\[]+/, '').replace(/[^}\]]+$/, '');
+
+    // Try to find the outermost JSON object or array (greedy match)
     const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
     const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
 
@@ -112,12 +120,18 @@ export class OllamaProvider implements AIProvider {
         repaired += '}'.repeat(Math.max(0, openBraces - closeBraces));
 
         return JSON.parse(repaired) as T;
-      } catch {
+      } catch (parseError) {
         // Log more details for debugging
         console.error('JSON parse failed. Response length:', text.length);
-        console.error('First 300 chars:', text.substring(0, 300));
-        console.error('Last 300 chars:', text.substring(Math.max(0, text.length - 300)));
-        throw new Error(`Failed to parse JSON from response: ${text.substring(0, 200)}...`);
+        console.error('Extracted JSON length:', finalJson.length);
+        console.error('First 500 chars of original:', text.substring(0, 500));
+        console.error('First 500 chars of extracted:', finalJson.substring(0, 500));
+        console.error('Last 300 chars of extracted:', finalJson.substring(Math.max(0, finalJson.length - 300)));
+        console.error('Parse error:', parseError);
+
+        // Try to provide a more helpful error message
+        const errorMsg = parseError instanceof Error ? parseError.message : 'Unknown parse error';
+        throw new Error(`Failed to parse JSON (${errorMsg}): Original response starts with: ${text.substring(0, 150)}...`);
       }
     }
   }
@@ -125,7 +139,8 @@ export class OllamaProvider implements AIProvider {
   async analyzePageStructure(html: string, url: string): Promise<PageStructureAnalysis> {
     const systemPrompt = `You are an expert QA engineer analyzing web pages for exploratory testing.
 Analyze the HTML structure and identify testable areas, forms, navigation, and potential risks.
-CRITICAL: Respond with valid JSON only. No markdown, no code blocks, no explanations.
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks.
+Do NOT use \`\`\`json or \`\`\` - output the JSON directly.
 Keep arrays short (max 5 items each) to ensure complete response.`;
 
     const prompt = `Analyze this web page and respond with JSON only:
@@ -160,7 +175,7 @@ JSON structure (keep arrays to max 5 items):
   async generateTestCharter(analysis: PageStructureAnalysis): Promise<GeneratedCharter> {
     const systemPrompt = `You are an expert exploratory tester creating test charters.
 Based on the page analysis, create a focused test charter with specific test ideas.
-Always respond with valid JSON only.`;
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks (no \`\`\`json).`;
 
     const prompt = `Create a test charter based on this page analysis:
 
@@ -198,7 +213,7 @@ Respond with this exact JSON structure:
     const systemPrompt = `You are an expert QA automation engineer creating exploration plans.
 Given an area to explore and context, propose specific actions to take.
 Use real CSS selectors from the page analysis when available.
-Always respond with valid JSON only.`;
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks (no \`\`\`json).`;
 
     const relevantArea = pageAnalysis.keyAreas.find((a) => a.name === area);
     const relevantIdeas = charter.testIdeas.filter((t) => t.area === area);
@@ -307,7 +322,7 @@ Respond with JSON:
   async identifyIssues(observations: string[], context: string): Promise<IdentifiedIssue[]> {
     const systemPrompt = `You are an expert QA engineer identifying issues from test observations.
 Categorize and prioritize issues found during testing.
-Always respond with valid JSON only.`;
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks (no \`\`\`json).`;
 
     const prompt = `Analyze these observations and identify any issues:
 
