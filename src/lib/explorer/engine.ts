@@ -74,33 +74,35 @@ export class ExplorationEngine {
 
   async run(): Promise<void> {
     try {
+      await this.updateProgress(2, "Setting up browser");
       await this.setup();
-      await this.updateProgress(10, "Navigating to URL");
 
+      await this.updateProgress(5, "Navigating to URL");
       await this.navigate();
-      await this.updateProgress(20, "Analyzing page structure");
 
+      await this.updateProgress(15, "Analyzing page structure");
       const pageAnalysis = await this.analyzePage();
 
-      // Save initial findings from page analysis
+      await this.updateProgress(22, "Checking for accessibility issues");
       await this.saveInitialFindings(pageAnalysis);
-      await this.updateProgress(30, "Generating test charter");
 
+      await this.updateProgress(25, "Generating test charter");
       const charter = await this.generateCharter(pageAnalysis);
       await this.saveCharter(charter);
-      await this.updateProgress(40, "Planning exploration");
 
+      await this.updateProgress(35, "Planning exploration strategy");
       const plan = await this.planExploration(pageAnalysis, charter);
-      await this.updateProgress(50, "Executing exploration");
 
+      await this.updateProgress(40, "Starting exploration");
       await this.executeExploration(plan);
-      await this.updateProgress(90, "Collecting final evidence");
 
+      await this.updateProgress(92, "Collecting console logs");
       await this.collectFinalEvidence();
 
-      // Generate exploration summary finding
+      await this.updateProgress(96, "Generating summary report");
       await this.generateSummaryFinding(plan);
-      await this.updateProgress(100, "Completed");
+
+      await this.updateProgress(100, "Exploration complete");
 
       await this.complete("completed");
     } catch (error) {
@@ -172,18 +174,20 @@ export class ExplorationEngine {
     if (!this.page) throw new Error("Page not initialized");
 
     this.log("info", `Navigating to ${this.config.url}`);
+    await this.updateProgress(6, "Loading page");
 
     await this.page.goto(this.config.url, {
       waitUntil: "networkidle",
       timeout: this.config.timeout,
     });
 
-    // Take initial screenshot
+    await this.updateProgress(10, "Taking initial screenshot");
     const screenshotPath = await this.takeScreenshot("01-initial-page", "Initial page load");
     this.log("info", "Initial page loaded", { screenshot: screenshotPath });
 
     // Handle authentication if credentials provided
     if (this.config.username && this.config.password) {
+      await this.updateProgress(11, "Attempting login");
       await this.attemptLogin();
     }
   }
@@ -350,20 +354,33 @@ export class ExplorationEngine {
     const url = this.page.url();
     const title = await this.page.title();
 
-    // Use AI to analyze the page
+    await this.updateProgress(16, "AI analyzing page content");
     const analysis = await this.aiProvider.analyzePageStructure(html, url);
 
-    // Enrich with actual page data
+    await this.updateProgress(17, "Extracting forms");
+    const forms = await this.extractForms();
+
+    await this.updateProgress(18, "Extracting navigation");
+    const navigation = await this.extractNavigation();
+
+    await this.updateProgress(19, "Extracting interactive elements");
+    const interactiveElements = await this.extractInteractiveElements();
+
+    await this.updateProgress(20, "Extracting links and images");
+    const links = await this.extractLinks();
+    const headings = await this.extractHeadings();
+    const images = await this.extractImages();
+
     const pageAnalysis: PageAnalysis = {
       url,
       title,
       description: analysis.primaryPurpose,
-      forms: await this.extractForms(),
-      navigation: await this.extractNavigation(),
-      interactiveElements: await this.extractInteractiveElements(),
-      links: await this.extractLinks(),
-      headings: await this.extractHeadings(),
-      images: await this.extractImages(),
+      forms,
+      navigation,
+      interactiveElements,
+      links,
+      headings,
+      images,
       issues: this.identifyInitialIssues(analysis),
     };
 
@@ -833,24 +850,36 @@ export class ExplorationEngine {
 
     let actionsExecuted = 0;
     const maxActions = this.config.maxActions!;
+    const totalPlannedActions = Math.min(
+      plans.reduce((sum, p) => sum + p.steps.length, 0),
+      maxActions
+    );
 
-    for (const plan of plans) {
+    for (let planIndex = 0; planIndex < plans.length; planIndex++) {
+      const plan = plans[planIndex];
       if (actionsExecuted >= maxActions) break;
 
+      // Update progress for new area
+      const areaProgress = 42 + Math.floor((planIndex / plans.length) * 5);
+      await this.updateProgress(areaProgress, `Exploring: ${plan.area}`);
       this.log("info", `Exploring area: ${plan.area}`);
 
       for (const step of plan.steps) {
         if (actionsExecuted >= maxActions) break;
 
+        // Update progress before action (shows what's currently running)
+        const progress = 45 + Math.floor((actionsExecuted / totalPlannedActions) * 45);
+        const truncatedDesc = step.description.length > 50
+          ? step.description.substring(0, 47) + "..."
+          : step.description;
+        await this.updateProgress(progress, `[${actionsExecuted + 1}/${totalPlannedActions}] ${truncatedDesc}`);
+
         try {
           await this.executeStep(step);
           actionsExecuted++;
-
-          // Update progress
-          const progress = 50 + Math.floor((actionsExecuted / maxActions) * 40);
-          await this.updateProgress(progress, `Executing: ${step.description}`);
         } catch (error) {
           this.log("warn", `Step failed: ${step.description} - ${error instanceof Error ? error.message : "Unknown"}`);
+          actionsExecuted++; // Still count failed actions
         }
       }
     }
