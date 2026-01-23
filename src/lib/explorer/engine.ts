@@ -143,6 +143,22 @@ export class ExplorationEngine {
       const message = error instanceof Error ? error.message : "Unknown error";
       const isStopped = message.includes("stopped by user");
       this.log(isStopped ? "info" : "error", `Exploration ${isStopped ? "stopped" : "failed"}: ${message}`);
+
+      // Create a finding for navigation/connection errors to make them visible in UI
+      if (!isStopped && (message.includes("Cannot connect") || message.includes("Network error") || message.includes("certificate error"))) {
+        await prisma.explorationFinding.create({
+          data: {
+            runId: this.runId,
+            type: "observation",
+            severity: "high",
+            title: "Failed to Access Application",
+            description: message,
+            location: this.config.url,
+            recommendation: "Ensure the application is running and accessible before starting exploration.",
+          },
+        }).catch(console.error);
+      }
+
       await this.complete("failed");
       if (!isStopped) throw error;
     } finally {
@@ -218,10 +234,56 @@ export class ExplorationEngine {
     this.log("info", `Navigating to ${this.config.url}`);
     await this.updateProgress(6, "Loading page");
 
-    await this.page.goto(this.config.url, {
-      waitUntil: "networkidle",
-      timeout: this.config.timeout,
-    });
+    try {
+      await this.page.goto(this.config.url, {
+        waitUntil: "networkidle",
+        timeout: this.config.timeout,
+      });
+    } catch (error) {
+      // Provide user-friendly error messages for common navigation issues
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      if (errorMessage.includes("ERR_CONNECTION_REFUSED")) {
+        const url = new URL(this.config.url);
+        await this.updateProgress(8, "Connection refused - server not running");
+        throw new Error(
+          `Cannot connect to ${url.origin} - the server is not running or not accepting connections. ` +
+          `Please ensure the application is started and accessible at ${this.config.url}`
+        );
+      } else if (errorMessage.includes("ERR_NAME_NOT_RESOLVED")) {
+        await this.updateProgress(8, "DNS error - cannot resolve hostname");
+        throw new Error(
+          `Cannot resolve hostname for ${this.config.url}. ` +
+          `Please check that the URL is correct and the server is accessible.`
+        );
+      } else if (errorMessage.includes("ERR_CERT_")) {
+        await this.updateProgress(8, "SSL certificate error");
+        throw new Error(
+          `SSL/TLS certificate error when connecting to ${this.config.url}. ` +
+          `The site may have an invalid or expired certificate.`
+        );
+      } else if (errorMessage.includes("Timeout") || errorMessage.includes("timeout")) {
+        await this.updateProgress(8, "Navigation timeout - page took too long to load");
+        throw new Error(
+          `Timeout while loading ${this.config.url} (waited ${this.config.timeout}ms). ` +
+          `The page took too long to load. Try increasing the timeout or check if the server is responding slowly.`
+        );
+      } else if (errorMessage.includes("net::ERR_")) {
+        // Generic network error
+        const errCode = errorMessage.match(/net::(ERR_[A-Z_]+)/)?.[1] || "UNKNOWN";
+        await this.updateProgress(8, `Network error: ${errCode}`);
+        throw new Error(
+          `Network error (${errCode}) when connecting to ${this.config.url}. ` +
+          `Please check your network connection and that the URL is accessible.`
+        );
+      } else {
+        // Re-throw other errors with more context
+        await this.updateProgress(8, "Navigation failed");
+        throw new Error(
+          `Failed to navigate to ${this.config.url}: ${errorMessage}`
+        );
+      }
+    }
 
     await this.updateProgress(10, "Taking initial screenshot");
     const screenshotPath = await this.takeScreenshot("01-initial-page", "Initial page load");
