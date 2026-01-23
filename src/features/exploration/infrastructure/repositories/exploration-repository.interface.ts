@@ -15,6 +15,7 @@ export type ExplorationRunWithRelations = ExplorationRun & {
 export interface CreateExplorationData {
   url: string;
   config?: string;
+  charter?: string;
   plan?: string;
   aiProvider?: string;
   aiModel?: string;

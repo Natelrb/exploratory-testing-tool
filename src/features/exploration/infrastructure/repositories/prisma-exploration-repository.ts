@@ -50,6 +50,7 @@ export class PrismaExplorationRepository implements IExplorationRepository {
         aiProvider: data.aiProvider || 'heuristic',
         aiModel: data.aiModel || null,
         config: data.config || null,
+        charter: data.charter || null,
         plan: data.plan || null,
       },
     });

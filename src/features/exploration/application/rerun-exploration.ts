@@ -57,11 +57,12 @@ export class RerunExplorationUseCase {
       : {};
     const plan = JSON.parse(originalRun.plan);
 
-    // Create new run
+    // Create new run with charter from original run
     const newRun = await this.explorationRepo.create({
       url: originalRun.url,
       config: originalRun.config || undefined,
       plan: originalRun.plan,
+      charter: originalRun.charter || undefined, // Persist charter from original run
       aiProvider: originalRun.aiProvider,
       aiModel: originalRun.aiModel || undefined,
     });
