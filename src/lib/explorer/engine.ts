@@ -1171,13 +1171,27 @@ export class ExplorationEngine {
 
     // Save total actions and the plan itself
     const totalActions = plans.reduce((sum, p) => sum + p.steps.length, 0);
-    await prisma.explorationRun.update({
-      where: { id: this.runId },
-      data: {
-        totalActions: Math.min(totalActions, this.config.maxActions!),
-        plan: JSON.stringify(plans), // Save plan for reruns
-      },
-    });
+    const maxActions = this.config.maxActions ?? 50; // Fallback to 50 if undefined
+    const totalActionsValue = Math.min(totalActions, maxActions);
+
+    this.log("info", `Saving plan with ${totalActions} total actions (capped at ${totalActionsValue}, max=${maxActions})`);
+    this.log("info", `Types: totalActions=${typeof totalActions}, maxActions=${typeof maxActions}, totalActionsValue=${typeof totalActionsValue}`);
+    this.log("info", `Values: totalActions=${totalActions}, maxActions=${maxActions}, totalActionsValue=${totalActionsValue}`);
+
+    // WORKAROUND: Prisma client has a persistent bug with totalActions field
+    // Use raw SQL to bypass the typed client completely
+    // Ensure totalActionsValue is a valid integer
+    const safeTotal = Number.isInteger(totalActionsValue) ? totalActionsValue : 0;
+
+    this.log("info", `Final safeTotal value: ${safeTotal} (type: ${typeof safeTotal})`);
+
+    await prisma.$executeRaw`
+      UPDATE exploration_runs
+      SET
+        totalActions = ${safeTotal},
+        plan = ${JSON.stringify(plans)}
+      WHERE id = ${this.runId}
+    `;
 
     return plans;
   }
