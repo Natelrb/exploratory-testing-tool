@@ -192,10 +192,21 @@ export class ExplorationEngine {
     // Register browser with manager so it can be force-closed on stop
     explorationManager.setBrowser(this.runId, this.browser);
 
-    this.context = await this.browser.newContext({
+    // Configure browser context with optional video recording
+    const contextOptions: Parameters<typeof this.browser.newContext>[0] = {
       viewport: this.config.viewport,
       ignoreHTTPSErrors: true,
-    });
+    };
+
+    // Add video recording if enabled
+    if (appConfig.exploration.recordVideo) {
+      contextOptions.recordVideo = {
+        dir: this.evidenceDir,
+        size: appConfig.exploration.videoSize,
+      };
+    }
+
+    this.context = await this.browser.newContext(contextOptions);
 
     this.page = await this.context.newPage();
 
@@ -294,6 +305,7 @@ export class ExplorationEngine {
     }
 
     await this.updateProgress(10, "Taking initial screenshot");
+    await this.waitForPageStability();
     const screenshotPath = await this.takeScreenshot("01-initial-page", "Initial page load");
     this.log("info", "Initial page loaded", { screenshot: screenshotPath });
 
@@ -406,6 +418,7 @@ export class ExplorationEngine {
             continue;
           }
         }
+        await this.waitForPageStability();
         await this.takeScreenshot("02-login-after-username", "After entering username (multi-step login)");
       }
 
@@ -446,8 +459,9 @@ export class ExplorationEngine {
         }
       }
 
-      // Wait for potential redirects
+      // Wait for potential redirects and page to stabilize
       await this.page.waitForTimeout(2000);
+      await this.waitForPageStability();
       await this.takeScreenshot("03-after-login", "After login completed");
 
       // Verify login was successful by checking if we're still on auth page
@@ -900,6 +914,7 @@ export class ExplorationEngine {
 
   private async saveInitialFindings(pageAnalysis: PageAnalysis) {
     // Take a screenshot for initial findings evidence
+    await this.waitForPageStability();
     const initialScreenshot = await this.takeScreenshot("initial-findings", "Initial page state for findings");
 
     // Save any issues identified during initial page analysis
@@ -1799,7 +1814,6 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
               throw clickError;
             }
           }
-          await this.page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
           break;
 
         case "fill":
@@ -1867,6 +1881,9 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
           this.log("warn", `Unknown action type: ${step.action}, skipping`);
           break;
       }
+
+      // Wait for page to stabilize before taking after screenshot
+      await this.waitForPageStability();
 
       // Take after screenshot with human-readable description
       const afterDesc = `After ${step.action}: ${step.description}`;
@@ -2023,6 +2040,28 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
     return finding;
   }
 
+  /**
+   * Wait for page to stabilize after an action
+   * Waits for network idle + additional delay for animations/transitions
+   */
+  private async waitForPageStability(): Promise<void> {
+    if (!this.page) return;
+
+    try {
+      // Wait for network to be idle (no network activity for 500ms)
+      await this.page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {
+        // Network might already be idle or timeout - that's ok
+      });
+
+      // Additional delay for animations, transitions, and dynamic content
+      // This ensures modals, dropdowns, tooltips, etc. are fully rendered
+      await this.page.waitForTimeout(appConfig.exploration.screenshotDelay);
+    } catch (error) {
+      // If waiting fails, log but continue - we'll still take the screenshot
+      this.log("debug", `Page stability wait failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
   private async takeScreenshot(name: string, description?: string): Promise<string> {
     if (!this.page) return "";
 
@@ -2115,10 +2154,53 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
         },
       });
     }
+
+    // Save video recording if enabled
+    if (appConfig.exploration.recordVideo && this.page) {
+      try {
+        // Get video from page (video recording is automatic when enabled)
+        const video = this.page.video();
+        if (video) {
+          // Close page to finalize video
+          await this.page.close();
+          this.page = null;
+
+          // Wait for video to be saved
+          const videoPath = await video.path();
+
+          // Move video to a consistent location
+          const targetVideoPath = path.join(this.evidenceDir, "exploration-recording.webm");
+          await fs.rename(videoPath, targetVideoPath);
+
+          // Get video file size for metadata
+          const stats = await fs.stat(targetVideoPath);
+          const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+
+          this.log("info", `Video recording saved: ${fileSizeMB}MB`);
+
+          await prisma.explorationEvidence.create({
+            data: {
+              runId: this.runId,
+              type: "video",
+              path: `/evidence/${this.runId}/exploration-recording.webm`,
+              description: "Full exploration recording",
+              metadata: JSON.stringify({
+                sizeBytes: stats.size,
+                sizeMB: fileSizeMB,
+                format: "webm",
+              }),
+            },
+          });
+        }
+      } catch (error) {
+        this.log("warn", `Failed to save video recording: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
+    }
   }
 
   private async generateSummaryFinding(plans: Array<{ area: string; steps: Array<unknown> }>) {
     // Take final screenshot for summary evidence
+    await this.waitForPageStability();
     const finalScreenshot = await this.takeScreenshot("final-summary", "Final page state for summary");
 
     // Count various metrics

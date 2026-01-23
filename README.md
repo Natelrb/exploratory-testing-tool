@@ -16,7 +16,7 @@ A web-based application for session-based exploratory testing, combining manual 
 - **Automated Browser Testing** - Playwright-based browser automation
 - **Intelligent Page Analysis** - AI analyzes page structure and identifies test opportunities
 - **Auto-Generated Test Charters** - AI creates testing charters based on application analysis
-- **Evidence Collection** - Automatic screenshots, console logs, and network traffic capture
+- **Evidence Collection** - Automatic screenshots, console logs, network traffic capture, and optional video recording
 - **Issue Detection** - AI identifies potential bugs, accessibility issues, and UX problems
 - **Multi-Step Login Support** - Handles complex authentication flows
 
@@ -133,7 +133,28 @@ The app will automatically detect and use Ollama when available.
    - Actions taken with before/after screenshots
    - Findings and recommendations
    - Console and network logs
+   - Video recording (if enabled)
    - Full evidence archive
+
+### Video Recording
+
+Enable video recording to capture the entire exploration session:
+
+1. **Enable in .env**
+   ```env
+   RECORD_VIDEO="true"
+   ```
+
+2. **Restart the server**
+   ```bash
+   npm run dev
+   ```
+
+3. **Run an exploration** - Videos will automatically be recorded and saved
+
+4. **View videos** - In the exploration results, go to the "Evidence" tab to watch the full session recording
+
+**Note**: Video files are typically 2-5MB per minute. Recordings are saved as WebM format at 1280x720 resolution for optimal file size.
 
 ## Project Structure
 
@@ -191,6 +212,27 @@ DATABASE_URL="file:./dev.db"
 
 # Ollama (default: http://localhost:11434)
 OLLAMA_BASE_URL="http://localhost:11434"
+
+# Video Recording (default: false)
+# Enable full session video recording for AI explorations
+# Videos are saved as WebM format at 1280x720 resolution
+# File size: ~2-5MB per minute of recording
+RECORD_VIDEO="true"
+
+# Screenshot Timing (default: 500ms)
+# Delay in milliseconds to wait after actions before taking screenshots
+# Helps capture animations, transitions, and dynamic content properly
+# Increase if screenshots are missing dropdown menus, tooltips, or modal content
+# SCREENSHOT_DELAY="1000"
+```
+
+### Advanced Configuration
+
+For fine-tuning the exploration engine, you can adjust these settings via environment variables:
+
+```env
+# Screenshot delay (milliseconds) - wait after actions before capturing
+SCREENSHOT_DELAY="500"  # Increase to 1000+ for slow animations
 ```
 
 ## Screenshots

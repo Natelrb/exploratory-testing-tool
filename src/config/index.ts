@@ -16,8 +16,16 @@ const ConfigSchema = z.object({
       height: z.number().positive().default(1080),
     }).default({}),
     screenshotTimeout: z.number().positive().default(15000),
+    screenshotDelay: z.number().min(0).default(
+      process.env.SCREENSHOT_DELAY ? parseInt(process.env.SCREENSHOT_DELAY) : 500
+    ), // ms to wait after actions before screenshot
     maxConsecutiveFailures: z.number().positive().default(5),
     selectorValidationTimeout: z.number().positive().default(2000),
+    recordVideo: z.boolean().default(process.env.RECORD_VIDEO === 'true'),
+    videoSize: z.object({
+      width: z.number().positive().default(1280),
+      height: z.number().positive().default(720),
+    }).default({}),
   }).default({}),
   ai: z.object({
     ollama: z.object({

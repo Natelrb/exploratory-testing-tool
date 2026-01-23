@@ -461,6 +461,26 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                             />
                           </div>
                         </button>
+                      ) : ev.type === "video" ? (
+                        <div className="w-full">
+                          <div className="aspect-video bg-gray-900 rounded overflow-hidden">
+                            <video
+                              controls
+                              className="w-full h-full"
+                              preload="metadata"
+                            >
+                              <source src={ev.path} type="video/webm" />
+                              Your browser does not support the video tag.
+                            </video>
+                          </div>
+                          <a
+                            href={ev.path}
+                            download
+                            className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 inline-block"
+                          >
+                            Download video
+                          </a>
+                        </div>
                       ) : (
                         <a
                           href={ev.path}
@@ -472,7 +492,6 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                             {ev.type === "console" && "📋"}
                             {ev.type === "network" && "🌐"}
                             {ev.type === "html" && "📄"}
-                            {ev.type === "video" && "🎥"}
                           </div>
                         </a>
                       )}
