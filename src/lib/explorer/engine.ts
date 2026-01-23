@@ -1026,20 +1026,22 @@ export class ExplorationEngine {
       accessibilityNotes: [],
     };
 
+    // Get available selectors to help AI choose valid ones
+    const availableSelectors = this.getAvailableSelectors(pageAnalysis);
+
     // Plan for high priority ideas
     for (const idea of highPriorityIdeas) {
       try {
-        const plan = await this.aiProvider.proposeExplorationPlan(
+        const validatedPlan = await this.planWithValidation(
           idea.area,
           simplifiedAnalysis,
-          charter
+          charter,
+          availableSelectors
         );
-        // Validate and filter out steps with invalid selectors
-        const validatedPlan = await this.validatePlanSelectors(plan);
-        if (validatedPlan.steps.length > 0) {
+        if (validatedPlan && validatedPlan.steps.length > 0) {
           plans.push({ area: idea.area, ...validatedPlan });
         } else {
-          this.log("warn", `Plan for "${idea.area}" had no valid selectors, skipping`);
+          this.log("warn", `Plan for "${idea.area}" had no valid selectors after validation, skipping`);
         }
       } catch (error) {
         this.log("warn", `Failed to plan for area ${idea.area}: ${error instanceof Error ? error.message : "Unknown"}`);
@@ -1049,17 +1051,16 @@ export class ExplorationEngine {
     // Plan for medium priority ideas
     for (const idea of mediumPriorityIdeas) {
       try {
-        const plan = await this.aiProvider.proposeExplorationPlan(
+        const validatedPlan = await this.planWithValidation(
           idea.area,
           simplifiedAnalysis,
-          charter
+          charter,
+          availableSelectors
         );
-        // Validate and filter out steps with invalid selectors
-        const validatedPlan = await this.validatePlanSelectors(plan);
-        if (validatedPlan.steps.length > 0) {
+        if (validatedPlan && validatedPlan.steps.length > 0) {
           plans.push({ area: idea.area, ...validatedPlan });
         } else {
-          this.log("warn", `Plan for "${idea.area}" had no valid selectors, skipping`);
+          this.log("warn", `Plan for "${idea.area}" had no valid selectors after validation, skipping`);
         }
       } catch (error) {
         this.log("warn", `Failed to plan for area ${idea.area}: ${error instanceof Error ? error.message : "Unknown"}`);
@@ -1464,15 +1465,147 @@ export class ExplorationEngine {
     return { isValid: true };
   }
 
+  /**
+   * Extract a list of available selectors from page analysis
+   * This helps the AI choose valid selectors when regenerating plans
+   */
+  private getAvailableSelectors(pageAnalysis: PageAnalysis): string[] {
+    const selectors: string[] = [];
+
+    // Add interactive element selectors
+    pageAnalysis.interactiveElements.forEach((el) => {
+      if (el.selector && el.isVisible && el.isEnabled) {
+        selectors.push(el.selector);
+      }
+    });
+
+    // Add form field selectors
+    pageAnalysis.forms.forEach((form) => {
+      if (form.selector) selectors.push(form.selector);
+      form.fields.forEach((field) => {
+        if (field.selector) selectors.push(field.selector);
+      });
+      if (form.submitButton?.selector) {
+        selectors.push(form.submitButton.selector);
+      }
+    });
+
+    // Add navigation selectors
+    pageAnalysis.navigation.forEach((nav) => {
+      if (nav.selector) selectors.push(nav.selector);
+    });
+
+    return selectors;
+  }
+
+  /**
+   * Plan exploration with validation and retries
+   * If the AI generates invalid selectors, we provide feedback and ask it to regenerate
+   */
+  private async planWithValidation(
+    area: string,
+    simplifiedAnalysis: any,
+    charter: Awaited<ReturnType<AIProvider["generateTestCharter"]>>,
+    availableSelectors: string[],
+    maxRetries: number = 2
+  ): Promise<{
+    objective: string;
+    steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }>;
+    expectedFindings: string[];
+    risks: string[];
+  } | null> {
+    let attempt = 0;
+    let lastInvalidSelectors: Array<{ selector: string; description: string }> = [];
+
+    while (attempt <= maxRetries) {
+      // Generate plan (with feedback on subsequent attempts)
+      let plan;
+      if (attempt === 0) {
+        // First attempt - no feedback
+        plan = await this.aiProvider.proposeExplorationPlan(
+          area,
+          simplifiedAnalysis,
+          charter
+        );
+      } else {
+        // Retry with feedback about invalid selectors
+        this.log("info", `Regenerating plan for "${area}" (attempt ${attempt + 1}/${maxRetries + 1}) due to invalid selectors`);
+
+        // Build feedback message
+        const invalidSelectorsList = lastInvalidSelectors
+          .map(s => `- "${s.selector}" (for: ${s.description})`)
+          .join('\n');
+
+        const availableSelectorsList = availableSelectors
+          .slice(0, 20) // Limit to avoid overwhelming the AI
+          .map(s => `- ${s}`)
+          .join('\n');
+
+        const feedback = `
+VALIDATION FEEDBACK: Some selectors in your previous plan don't exist on the page.
+
+Invalid selectors:
+${invalidSelectorsList}
+
+Here are some selectors that DO exist on the page:
+${availableSelectorsList}
+
+Please regenerate the plan using ONLY selectors that actually exist on the page. Do not invent data-testid or data-test attributes that aren't present.
+`;
+
+        // For now, we'll treat this as a new attempt with the same inputs
+        // In the future, we could extend the AI provider interface to accept feedback
+        plan = await this.aiProvider.proposeExplorationPlan(
+          area + "\n\n" + feedback,
+          simplifiedAnalysis,
+          charter
+        );
+      }
+
+      // Validate selectors
+      const validation = await this.validatePlanSelectors(plan);
+
+      // If all selectors are valid, or we have some valid steps, return
+      if (validation.invalidSelectors.length === 0) {
+        if (attempt > 0) {
+          this.log("info", `Successfully regenerated plan for "${area}" with valid selectors`);
+        }
+        return validation.plan;
+      }
+
+      // If we still have invalid selectors but some valid steps, return what we have
+      if (validation.plan.steps.length > 0 && attempt === maxRetries) {
+        this.log("info", `Returning partial plan for "${area}" with ${validation.plan.steps.length} valid steps (${validation.invalidSelectors.length} invalid selectors filtered)`);
+        return validation.plan;
+      }
+
+      // If no valid steps and we have retries left, try again
+      if (validation.plan.steps.length === 0 && attempt < maxRetries) {
+        lastInvalidSelectors = validation.invalidSelectors;
+        attempt++;
+        continue;
+      }
+
+      // No valid steps and no retries left
+      return null;
+    }
+
+    return null;
+  }
+
   private async validatePlanSelectors(plan: {
     objective: string;
     steps: Array<{ action: string; target: string; value?: string; description: string; expectedOutcome: string; riskLevel: string }>;
     expectedFindings: string[];
     risks: string[];
-  }) {
-    if (!this.page) return plan;
+  }): Promise<{
+    plan: typeof plan;
+    invalidSelectors: Array<{ selector: string; description: string }>;
+  }> {
+    if (!this.page) return { plan, invalidSelectors: [] };
 
     const validSteps = [];
+    const invalidSelectors: Array<{ selector: string; description: string }> = [];
 
     for (const step of plan.steps) {
       // Skip steps that don't have selectors (like wait, assert, etc.)
@@ -1488,21 +1621,23 @@ export class ExplorationEngine {
           state: 'attached',
           timeout: appConfig.exploration.selectorValidationTimeout
         });
-        const elementExists = true;
-        if (elementExists) {
-          validSteps.push(step);
-        } else {
-          this.log("info", `Skipping step with non-existent selector: ${step.target} (${step.description})`);
-        }
+        validSteps.push(step);
       } catch (error) {
         // Invalid selector syntax or not found
-        this.log("info", `Skipping step with invalid selector: ${step.target} (${step.description})`);
+        this.log("info", `Invalid selector: ${step.target} (${step.description})`);
+        invalidSelectors.push({
+          selector: step.target,
+          description: step.description,
+        });
       }
     }
 
     return {
-      ...plan,
-      steps: validSteps,
+      plan: {
+        ...plan,
+        steps: validSteps,
+      },
+      invalidSelectors,
     };
   }
 
