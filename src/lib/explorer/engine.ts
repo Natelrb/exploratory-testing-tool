@@ -107,10 +107,18 @@ export class ExplorationEngine {
 
         // Save total actions for the saved plan
         const totalActions = plan.reduce((sum, p) => sum + p.steps.length, 0);
-        await prisma.explorationRun.update({
-          where: { id: this.runId },
-          data: { totalActions: Math.min(totalActions, this.config.maxActions!) },
-        });
+        const maxActions = this.config.maxActions ?? 50;
+        const totalActionsValue = Math.min(totalActions, maxActions);
+        const safeTotal = Number.isInteger(totalActionsValue) ? totalActionsValue : 0;
+
+        this.log("info", `Rerun: Saving ${totalActions} total actions (capped at ${safeTotal})`);
+
+        // WORKAROUND: Use raw SQL to bypass Prisma client bug
+        await prisma.$executeRaw`
+          UPDATE exploration_runs
+          SET totalActions = ${safeTotal}
+          WHERE id = ${this.runId}
+        `;
       } else {
         // Generate new plan
         await this.updateProgress(25, "Generating test charter");
