@@ -1352,7 +1352,7 @@ export class ExplorationEngine {
     // Derive a display charter from the ACs so the existing run UI has
     // coherent header text.
     const derivedCharter = {
-      mission: `Verify ${acs.length} acceptance criterion${acs.length === 1 ? "" : "a"}`,
+      mission: `Verify ${acs.length} acceptance ${acs.length === 1 ? "criterion" : "criteria"}`,
       riskFocus: "Failures of stated acceptance criteria",
       scope: `${acs.length} AC(s) in priority order`,
       outOfScope: ["Generic exploration outside of provided ACs"],

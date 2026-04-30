@@ -25,13 +25,20 @@ export async function detectBestProvider(): Promise<AIConfig> {
   if (ollamaAvailable) {
     const models = await listOllamaModels();
 
-    // Prefer these models in order
+    // Prefer these models in order. Coder-tuned variants are noticeably
+    // better at strict JSON output, which matters for AC parsing and plan
+    // generation. Order: coder variants first, then general models.
     const preferredModels = [
+      "qwen2.5-coder:14b",
+      "qwen2.5-coder:7b",
+      "qwen3:14b",
       "qwen2.5:14b",
       "qwen2.5:7b",
       "llama3.2:11b",
       "llama3.2:3b",
+      "mistral-nemo:12b",
       "mistral:7b",
+      "gemma3:12b",
       "gemma2:9b",
     ];
 
