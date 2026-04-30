@@ -95,13 +95,21 @@ export class ExplorationEngine {
 
       if (this.shouldStop()) throw new Error("Exploration stopped by user");
 
-      await this.updateProgress(22, "Checking for accessibility issues");
-      await this.saveInitialFindings(pageAnalysis);
+      const isACMode = !!(this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0);
+
+      // Skip the heuristic accessibility/risk pass in AC mode — those
+      // produce a lot of generic noise (missing-alt, "potential risk",
+      // etc.) that has nothing to do with the user's stated criteria,
+      // and the whole point of AC mode is signal over volume.
+      if (!isACMode) {
+        await this.updateProgress(22, "Checking for accessibility issues");
+        await this.saveInitialFindings(pageAnalysis);
+      }
 
       // Branch: if the run was created with acceptance criteria, drive
       // exploration toward verifying each AC instead of generating a
       // freeform charter.
-      if (this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0) {
+      if (isACMode) {
         await this.updateProgress(28, "AC mode: planning per criterion");
         await this.runACMode(pageAnalysis);
         await this.updateProgress(96, "Generating summary report");
@@ -868,6 +876,9 @@ export class ExplorationEngine {
         selector: string;
         dimensions: string;
         context: string;
+        width: number;
+        height: number;
+        decorative: boolean;
       }> = [];
 
       document.querySelectorAll("img").forEach((img, index) => {
@@ -887,13 +898,27 @@ export class ExplorationEngine {
           ? `inside ${parent.tagName.toLowerCase()}${parent.className ? '.' + parent.className.split(' ')[0] : ''}`
           : '';
 
+        const width = img.naturalWidth || img.width;
+        const height = img.naturalHeight || img.height;
+        const ariaHidden = img.getAttribute("aria-hidden") === "true";
+        const role = (img.getAttribute("role") || "").toLowerCase();
+        const decorative = ariaHidden || role === "presentation" || role === "none" || (width > 0 && height > 0 && width <= 4 && height <= 4);
+
+        // Treat the *presence* of the alt attribute as "has alt" — alt=""
+        // is the WCAG-correct marker for decorative images, not a missing
+        // alt. Previous logic flagged empty alts as failures, which is wrong.
+        const hasAlt = img.hasAttribute("alt");
+
         images.push({
           src: img.src,
           alt: img.alt || undefined,
-          hasAlt: !!img.alt,
+          hasAlt,
           selector,
-          dimensions: `${img.naturalWidth || img.width}x${img.naturalHeight || img.height}`,
+          dimensions: `${width}x${height}`,
           context,
+          width,
+          height,
+          decorative,
         });
       });
 
@@ -946,8 +971,12 @@ export class ExplorationEngine {
     }
 
     // Check for common issues that weren't explicitly flagged
-    // Images without alt text
-    const imagesWithoutAlt = pageAnalysis.images.filter(img => !img.hasAlt);
+    // Images without alt text — but exclude decorative ones (aria-hidden,
+    // role=presentation/none, ≤4x4 spacers) since those are not real
+    // accessibility violations.
+    const imagesWithoutAlt = pageAnalysis.images.filter(
+      (img) => !img.hasAlt && !(img as { decorative?: boolean }).decorative
+    );
     if (imagesWithoutAlt.length > 0) {
       // List the images with useful identifying info
       const imageList = imagesWithoutAlt

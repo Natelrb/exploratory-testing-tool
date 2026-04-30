@@ -104,6 +104,9 @@ export interface PageAnalysis {
     selector: string;
     dimensions: string;
     context: string;
+    width?: number;
+    height?: number;
+    decorative?: boolean;
   }[];
   issues: PageIssue[];
 }
