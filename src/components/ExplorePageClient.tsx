@@ -197,9 +197,9 @@ export default function ExplorePageClient({ initialRuns }: Props) {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div className="space-y-6 max-w-4xl mx-auto">
       {/* New Exploration Form */}
-      <div className="lg:col-span-1">
+      <div>
         <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow-sm border border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
             New Exploration
@@ -392,7 +392,7 @@ export default function ExplorePageClient({ initialRuns }: Props) {
       </div>
 
       {/* Past Explorations */}
-      <div className="lg:col-span-2">
+      <div>
         <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow-sm border border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
             Exploration History
