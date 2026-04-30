@@ -306,7 +306,7 @@ export default function ExplorePageClient({ initialRuns }: Props) {
                   setAcText(e.target.value);
                   setParsedACs(null);
                 }}
-                placeholder={`AC-1\nGiven I am on the alerts page\nWhen I filter by severity 'critical'\nThen only critical alerts are shown\n\nAC-2\nGiven I am logged in\nWhen I open the user menu\nThen I see a "Sign out" option`}
+                placeholder={`Given I am on the alerts page\nWhen I filter by severity 'critical'\nThen only critical alerts are shown\n\nGiven I am logged in\nWhen I click the user menu\nThen I see a 'Sign out' option`}
                 rows={14}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white text-sm font-mono resize-y min-h-[200px]"
               />
