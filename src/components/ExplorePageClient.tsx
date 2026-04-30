@@ -197,7 +197,7 @@ export default function ExplorePageClient({ initialRuns }: Props) {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    <div className="space-y-6">
       {/* New Exploration Form */}
       <div>
         <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow-sm border border-gray-200 dark:border-gray-700">
