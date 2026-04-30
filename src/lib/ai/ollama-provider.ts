@@ -9,6 +9,8 @@ import type {
   ScreenshotAnalysis,
   IdentifiedIssue,
   ParsedAC,
+  DecideNextStepInput,
+  DecisionResult,
 } from "./types";
 import type { AcceptanceCriterion } from "@/lib/explorer/types";
 
@@ -474,6 +476,81 @@ Respond with this exact JSON:
 
     const response = await this.chat(prompt, systemPrompt);
     return this.extractJSON<ExplorationPlanResult>(response);
+  }
+
+  // Single-step exploratory decision. The AI picks ONE action, declares
+  // WHEN satisfied, or declares blocked — informed by what's happened so far.
+  async decideNextStep(input: DecideNextStepInput): Promise<DecisionResult> {
+    const systemPrompt = `You are an exploratory tester driving a web app to verify an acceptance criterion. You decide ONE action at a time.
+
+Each turn you observe the current page and either:
+- take a single next action toward reaching the GIVEN state and performing the WHEN action
+- declare WHEN is now satisfied (oracle will run)
+- declare you are blocked and explain why
+
+Be conservative: if WHEN is clearly satisfied, return "done" rather than over-stepping.
+Use only selectors that appear in the page analysis. Do NOT invent data-testid or other attributes.
+CRITICAL: Respond with raw JSON. No markdown code blocks.`;
+
+    const clickable = input.pageAnalysis.interactiveElements
+      .filter((e) => e.type === "button" || e.type === "link")
+      .slice(0, 15);
+    const inputs = input.pageAnalysis.forms.flatMap((f) => f.fields).slice(0, 12);
+    const navigation = input.pageAnalysis.navigation.slice(0, 10);
+
+    const historyText =
+      input.history.length === 0
+        ? "(no actions taken yet)"
+        : input.history
+            .map(
+              (h, i) =>
+                `${i + 1}. ${h.action} ${h.target}${h.succeeded ? "" : " [FAILED]"} — ${h.description}${h.rationale ? ` (${h.rationale})` : ""}`
+            )
+            .join("\n");
+
+    const observationsText =
+      input.observations.length === 0
+        ? "(none)"
+        : input.observations.slice(-8).map((o) => `- ${o}`).join("\n");
+
+    const prompt = `ACCEPTANCE CRITERION: ${input.acId}
+GIVEN: ${input.given}
+WHEN:  ${input.when}
+THEN:  ${input.then}
+
+CURRENT PAGE
+URL: ${input.pageAnalysis.primaryPurpose ? "" : ""}${(input.pageAnalysis as unknown as { url?: string }).url ?? ""}
+Navigation:
+${JSON.stringify(navigation, null, 2)}
+Clickable elements:
+${JSON.stringify(clickable, null, 2)}
+Form fields:
+${JSON.stringify(inputs, null, 2)}
+
+WHAT YOU'VE DONE SO FAR:
+${historyText}
+
+OBSERVATIONS FROM PRIOR STEPS:
+${observationsText}
+
+STEPS REMAINING IN BUDGET: ${input.stepsRemaining}
+
+Decide your next move. Respond with one of these JSON shapes:
+
+  // Take ONE action toward Given+When:
+  { "kind": "step", "rationale": "why this action moves toward the goal",
+    "step": { "action": "click|fill|select|hover|scroll|wait", "target": "exact selector", "value": "for fill", "description": "...", "expectedOutcome": "...", "riskLevel": "safe|moderate|risky" } }
+
+  // WHEN is satisfied — run the oracle now:
+  { "kind": "done", "rationale": "why you believe WHEN is now satisfied" }
+
+  // Cannot proceed:
+  { "kind": "blocked", "reason": "specific reason — e.g. no path from current state to the GIVEN" }
+
+Pick the simplest action that makes progress. Prefer "done" if WHEN is already true.`;
+
+    const response = await this.chat(prompt, systemPrompt);
+    return this.extractJSON<DecisionResult>(response);
   }
 
   private truncateHTML(html: string): string {

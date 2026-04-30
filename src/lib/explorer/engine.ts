@@ -2,6 +2,7 @@
 
 import { chromium, Browser, BrowserContext, Page } from "playwright";
 import { createAIProvider, detectBestProvider, type AIConfig, type AIProvider } from "@/lib/ai";
+import type { DecisionResult, PriorStepSummary } from "@/lib/ai/types";
 import type {
   ExplorationConfig,
   PageAnalysis,
@@ -1365,29 +1366,37 @@ export class ExplorationEngine {
   }
 
   // ============================================
-  // AC mode — drive exploration to verify each acceptance criterion.
-  // For each AC: ask the AI provider to plan a path to the GIVEN+WHEN
-  // state, execute it, then run the deterministic oracle to verify THEN.
+  // AC mode — exploratory verification of acceptance criteria.
+  //
+  // For each AC, run a plan-execute-observe loop:
+  //   1. Re-analyze the current page (fresh DOM/URL/console)
+  //   2. Ask the AI for ONE next action (or "done" / "blocked")
+  //   3. Execute, capture observations, log rationale
+  //   4. Repeat until WHEN is judged satisfied or step budget hits
+  //   5. Run the deterministic oracle to verify THEN
+  //
+  // This is the actually-exploratory loop: each step is informed by what
+  // just happened, not a stale upfront plan. Side observations (console
+  // errors, slow steps, unexpected URL changes, error toasts) are saved
+  // as low-severity findings linked to the AC.
   // ============================================
-  private async runACMode(pageAnalysis: PageAnalysis) {
+  private async runACMode(_initialPageAnalysis: PageAnalysis) {
     if (!this.page) return;
     const acs = this.config.acceptanceCriteria ?? [];
     if (acs.length === 0) return;
 
-    if (!this.aiProvider.proposeACPlan) {
+    if (!this.aiProvider.decideNextStep) {
       this.log(
         "error",
-        `AI provider '${this.aiProvider.name}' does not support AC planning. Switch to an LLM-backed provider.`
+        `AI provider '${this.aiProvider.name}' does not support exploratory AC mode. Switch to an LLM-backed provider.`
       );
-      // Record blocked verdicts for every AC so the UI is accurate.
       for (const ac of acs) {
-        await this.recordVerdict(ac, "blocked", "AI provider does not support AC planning");
+        await this.recordVerdict(ac, "blocked", "AI provider does not support exploratory AC mode");
       }
       return;
     }
 
-    // Derive a display charter from the ACs so the existing run UI has
-    // coherent header text.
+    // Display charter derived from the ACs (existing UI expects one).
     const derivedCharter = {
       mission: `Verify ${acs.length} acceptance ${acs.length === 1 ? "criterion" : "criteria"}`,
       riskFocus: "Failures of stated acceptance criteria",
@@ -1399,139 +1408,210 @@ export class ExplorationEngine {
         priority: ac.priority === "must" ? ("high" as const) : ac.priority === "should" ? ("medium" as const) : ("low" as const),
         rationale: ac.given || ac.when,
       })),
-      suggestedDuration: Math.max(15, acs.length * 5),
+      suggestedDuration: Math.max(15, acs.length * 8),
     };
     await this.saveCharter(derivedCharter);
 
-    // Build a simplified analysis once (AIProvider expects PageStructureAnalysis).
-    const simplifiedAnalysis = this.buildSimplifiedAnalysis(pageAnalysis);
+    // Per-AC step budget controls how exploratory we get. Total run budget
+    // is config.maxActions. We give each AC up to 8 steps but cap at the
+    // remaining budget.
+    const perACBudget = 8;
+    const totalBudget = this.config.maxActions ?? 50;
+    let totalUsed = 0;
 
-    // Plan all ACs up front so we can populate totalActions.
-    const acPlans: Array<{
-      ac: AcceptanceCriterion;
-      plan: Awaited<ReturnType<NonNullable<AIProvider["proposeACPlan"]>>>;
-    }> = [];
-    for (let i = 0; i < acs.length; i++) {
-      const ac = acs[i];
-      if (this.shouldStop()) break;
-      await this.updateProgress(
-        30 + Math.floor((i / acs.length) * 8),
-        `Planning ${ac.id}`
-      );
-      try {
-        const plan = await this.aiProvider.proposeACPlan!(ac, simplifiedAnalysis);
-        acPlans.push({ ac, plan });
-      } catch (err) {
-        this.log("warn", `Failed to plan ${ac.id}: ${err instanceof Error ? err.message : err}`);
-        await this.recordVerdict(ac, "error", `Planning failed: ${err instanceof Error ? err.message : "unknown"}`);
-      }
-    }
-
-    const totalSteps = Math.min(
-      acPlans.reduce((sum, p) => sum + p.plan.steps.length, 0),
-      this.config.maxActions ?? 50
-    );
+    // Pre-populate totalActions with an upper bound so the progress bar
+    // is meaningful before steps execute.
     await prisma.$executeRaw`
       UPDATE exploration_runs
-      SET totalActions = ${totalSteps},
-          plan = ${JSON.stringify(acPlans.map((p) => ({ area: p.ac.id, ...p.plan })))}
+      SET totalActions = ${Math.min(acs.length * perACBudget, totalBudget)}
       WHERE id = ${this.runId}
     `;
 
-    let stepsExecuted = 0;
-    const maxActions = this.config.maxActions ?? 50;
-
-    // Execute and verify each AC in order.
-    for (let i = 0; i < acPlans.length; i++) {
+    for (let i = 0; i < acs.length; i++) {
       if (this.shouldStop()) break;
-      if (stepsExecuted >= maxActions) {
-        // Mark remaining ACs as blocked.
-        for (let j = i; j < acPlans.length; j++) {
-          await this.recordVerdict(acPlans[j].ac, "blocked", "Action budget exhausted before this AC");
+      if (totalUsed >= totalBudget) {
+        for (let j = i; j < acs.length; j++) {
+          await this.recordVerdict(acs[j], "blocked", "Action budget exhausted before this AC");
         }
         break;
       }
 
-      const { ac, plan } = acPlans[i];
-      const acProgress = 40 + Math.floor((i / acPlans.length) * 50);
-      await this.updateProgress(acProgress, `Verifying ${ac.id}: ${truncate(ac.then, 40)}`);
-      this.log("info", `Verifying ${ac.id}`, { then: ac.then });
-
-      if (plan.steps.length === 0) {
-        await this.recordVerdict(ac, "blocked", "No actionable plan generated for this AC");
-        continue;
-      }
-
-      // Capture window boundary so we can scope console/network observations
-      // to just this AC's actions.
-      const windowStart = new Date();
+      const ac = acs[i];
+      const acStart = Date.now();
       const consoleStartIdx = this.consoleMessages.length;
       const networkStartIdx = this.networkResponses.length;
-      const acStart = Date.now();
-      let stepFailed = false;
+      const acProgress = 40 + Math.floor((i / acs.length) * 50);
+      await this.updateProgress(acProgress, `Verifying ${ac.id}: ${truncate(ac.then, 40)}`);
+      this.log("info", `Verifying ${ac.id}`, { given: ac.given, when: ac.when, then: ac.then });
 
-      for (const step of plan.steps) {
+      const history: PriorStepSummary[] = [];
+      const observations: string[] = [];
+      let acStepsUsed = 0;
+      let blockedReason: string | null = null;
+      let aiDeclaredDone = false;
+
+      // Per-AC loop
+      while (acStepsUsed < perACBudget && totalUsed < totalBudget) {
         if (this.shouldStop()) break;
-        if (stepsExecuted >= maxActions) {
-          stepFailed = true;
+
+        // Re-analyze the current page so the AI sees what's actually there
+        // *now* rather than a stale snapshot.
+        let currentAnalysis;
+        try {
+          const pageAnalysis = await this.analyzePage();
+          currentAnalysis = this.buildSimplifiedAnalysis(pageAnalysis);
+          (currentAnalysis as unknown as { url: string }).url = this.page.url();
+        } catch (err) {
+          this.log("warn", `Re-analysis failed for ${ac.id}: ${err instanceof Error ? err.message : err}`);
+          blockedReason = `Could not analyze current page: ${err instanceof Error ? err.message : "unknown"}`;
           break;
         }
-        // Page-state guard.
+
+        // Ask the AI what to do next.
+        let decision: DecisionResult;
+        try {
+          decision = await this.aiProvider.decideNextStep!({
+            acId: ac.id,
+            given: ac.given,
+            when: ac.when,
+            then: ac.then,
+            pageAnalysis: currentAnalysis,
+            history,
+            observations,
+            stepsRemaining: Math.min(perACBudget - acStepsUsed, totalBudget - totalUsed),
+          });
+        } catch (err) {
+          this.log("warn", `decideNextStep failed for ${ac.id}: ${err instanceof Error ? err.message : err}`);
+          blockedReason = `AI decision failed: ${err instanceof Error ? err.message : "unknown"}`;
+          break;
+        }
+
+        if (decision.kind === "done") {
+          this.log("info", `${ac.id}: AI declares WHEN satisfied — ${decision.rationale}`);
+          aiDeclaredDone = true;
+          break;
+        }
+
+        if (decision.kind === "blocked") {
+          this.log("info", `${ac.id}: AI declares blocked — ${decision.reason}`);
+          blockedReason = decision.reason;
+          break;
+        }
+
+        // decision.kind === "step"
+        const step = decision.step;
+        this.log("info", `${ac.id} step ${acStepsUsed + 1}: ${step.description} — ${decision.rationale}`);
+
+        // Page-state guard before executing.
         const pageState = await this.validatePageState();
         if (!pageState.isValid) {
-          this.log("warn", `Skipping ${ac.id} step: ${pageState.reason}`);
-          stepFailed = true;
+          this.log("warn", `Page state invalid before step: ${pageState.reason}`);
+          blockedReason = `Page state invalid: ${pageState.reason}`;
           break;
         }
+
+        // Capture pre-state for observation diffing.
+        const beforeUrl = this.page.url();
+        const beforeConsole = this.consoleMessages.length;
+        const beforeNetwork = this.networkResponses.length;
+        const stepStart = Date.now();
+        let stepSucceeded = true;
+
         try {
-          await this.executeStep(step);
-          stepsExecuted++;
+          await this.executeStep({
+            action: step.action,
+            target: step.target,
+            value: step.value,
+            description: step.description,
+            expectedOutcome: step.expectedOutcome,
+            riskLevel: step.riskLevel,
+          });
         } catch (err) {
+          stepSucceeded = false;
           this.log("warn", `${ac.id} step failed: ${step.description}`);
-          stepsExecuted++;
-          stepFailed = true;
-          // Continue: oracle may still pass if state is acceptable.
+          observations.push(`step ${acStepsUsed + 1} (${step.action} ${step.target}) failed`);
         }
+
+        const stepDuration = Date.now() - stepStart;
+
+        // Collect side observations.
+        const stepObs = await this.collectStepObservations({
+          beforeUrl,
+          beforeConsole,
+          beforeNetwork,
+          stepDuration,
+          actionType: step.action,
+        });
+        observations.push(...stepObs);
+
+        // Persist non-trivial observations as findings linked to the AC.
+        for (const obs of stepObs) {
+          await this.recordFinding({
+            type: "observation",
+            severity: "info",
+            title: `${ac.id} observation: ${truncate(obs, 60)}`,
+            description: `While verifying ${ac.id}: ${obs}\n\nStep: ${step.action} ${step.target} (${step.description})`,
+          });
+        }
+
+        history.push({
+          action: step.action,
+          target: step.target,
+          description: step.description,
+          succeeded: stepSucceeded,
+          rationale: decision.rationale,
+        });
+
+        acStepsUsed++;
+        totalUsed++;
       }
 
-      if (stepFailed) {
-        // The "given+when" couldn't be reached fully — still try the oracle,
-        // since some oracles (like console no-errors) may legitimately pass.
-        // But we annotate the reason if it fails.
+      if (acStepsUsed >= perACBudget && !aiDeclaredDone && !blockedReason) {
+        this.log("info", `${ac.id}: per-AC step budget exhausted; running oracle with current state`);
+        observations.push("Per-AC step budget exhausted before AI declared done");
       }
 
-      // Run the oracle with windowed observations.
+      // Always run the oracle — even on blocked, the current state may
+      // legitimately satisfy it (e.g. console no-errors).
+      const { runOracle } = await import("./oracles");
       const ctx = {
         page: this.page,
         consoleMessages: this.consoleMessages.slice(consoleStartIdx),
         networkResponses: this.networkResponses.slice(networkStartIdx),
         aiProvider: this.aiProvider,
       };
-      const { runOracle } = await import("./oracles");
-      const result = await runOracle(ac.oracle, ctx);
+      const oracleResult = await runOracle(ac.oracle, ctx);
       const duration = Date.now() - acStart;
 
-      const status = result.passed ? "pass" : stepFailed ? "blocked" : "fail";
-      const reason = result.passed
-        ? result.reason
-        : stepFailed
-        ? `Plan did not complete: ${result.reason}`
-        : result.reason;
+      let status: "pass" | "fail" | "blocked" | "error";
+      let reason: string;
+      if (oracleResult.passed) {
+        status = "pass";
+        reason = oracleResult.reason;
+      } else if (blockedReason) {
+        status = "blocked";
+        reason = `${blockedReason}. Oracle: ${oracleResult.reason}`;
+      } else {
+        status = "fail";
+        reason = oracleResult.reason;
+      }
 
       await this.recordVerdict(ac, status, reason, duration);
-      this.log("info", `${ac.id} → ${status}`, { reason });
+      this.log("info", `${ac.id} → ${status}`, { reason, stepsUsed: acStepsUsed });
 
-      // If the AC failed, record a finding so it shows up in the existing
-      // findings tab in addition to the verdict matrix.
       if (status === "fail" || status === "blocked") {
+        const stepsTaken = history.length === 0
+          ? "(no steps were executed)"
+          : history.map((h, idx) => `${idx + 1}. ${h.action} ${h.target} ${h.succeeded ? "" : "[FAILED]"}`).join("\n");
         await this.recordFinding({
           type: "bug",
           severity: ac.priority === "must" ? "high" : ac.priority === "should" ? "medium" : "low",
           title: `${ac.id} ${status}: ${truncate(ac.then, 60)}`,
-          description: `Acceptance criterion ${ac.id} did not pass.\n\nGIVEN: ${ac.given}\nWHEN: ${ac.when}\nTHEN: ${ac.then}\n\nReason: ${reason}`,
+          description: `Acceptance criterion ${ac.id} did not pass.\n\nGIVEN: ${ac.given}\nWHEN: ${ac.when}\nTHEN: ${ac.then}\n\nReason: ${reason}\n\nSteps taken:\n${stepsTaken}`,
+          stepsToReproduce: history.map((h) => `${h.action} ${h.target} — ${h.description}`),
           recommendation:
             status === "blocked"
-              ? "Review the action plan: the AI could not reach the precondition or perform the action."
+              ? "The AI could not reach the precondition or perform the action. Review the steps taken and consider refining the AC text or the application's discoverability."
               : "Review the oracle result and the steps leading up to it; the THEN clause was not satisfied.",
         });
       }
@@ -1539,8 +1619,72 @@ export class ExplorationEngine {
 
     await prisma.explorationRun.update({
       where: { id: this.runId },
-      data: { completedActions: stepsExecuted },
+      data: { completedActions: totalUsed },
     });
+  }
+
+  // Compare before/after state of a single step and return notable
+  // observations for the AI's history and for surfacing as findings.
+  private async collectStepObservations(args: {
+    beforeUrl: string;
+    beforeConsole: number;
+    beforeNetwork: number;
+    stepDuration: number;
+    actionType: string;
+  }): Promise<string[]> {
+    const out: string[] = [];
+    if (!this.page) return out;
+
+    const afterUrl = this.page.url();
+    if (afterUrl !== args.beforeUrl) {
+      out.push(`URL changed to ${afterUrl}`);
+    }
+
+    const newConsole = this.consoleMessages.slice(args.beforeConsole);
+    const errors = newConsole.filter((m) => m.type === "error");
+    const warns = newConsole.filter((m) => m.type === "warn");
+    if (errors.length > 0) {
+      out.push(`${errors.length} console error(s) during step: ${errors[0].text.slice(0, 120)}`);
+    } else if (warns.length > 0) {
+      out.push(`${warns.length} console warning(s) during step`);
+    }
+
+    const newNetwork = this.networkResponses.slice(args.beforeNetwork);
+    const failed = newNetwork.filter((r) => r.status >= 400);
+    if (failed.length > 0) {
+      out.push(`${failed.length} HTTP error response(s): ${failed[0].status} ${failed[0].url.slice(0, 80)}`);
+    }
+
+    // Slow step heuristics — clicks/fills should be fast.
+    const slowThreshold = args.actionType === "wait" ? 30000 : 4000;
+    if (args.stepDuration > slowThreshold) {
+      out.push(`Slow step: ${args.actionType} took ${(args.stepDuration / 1000).toFixed(1)}s`);
+    }
+
+    // Look for newly-appeared error/alert/toast elements.
+    try {
+      const errorMessages = await this.page.evaluate(() => {
+        const nodes = document.querySelectorAll(
+          '[role="alert"], [role="alertdialog"], .error, .alert-error, .toast-error, [class*="ErrorMessage"]'
+        );
+        return Array.from(nodes)
+          .filter((el) => {
+            const html = el as HTMLElement;
+            const rect = html.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          })
+          .slice(0, 3)
+          .map((el) => (el as HTMLElement).innerText.trim().slice(0, 200))
+          .filter((t) => t.length > 0);
+      });
+      for (const msg of errorMessages) {
+        out.push(`Error/alert visible: "${msg}"`);
+      }
+    } catch {
+      // ignore
+    }
+
+    return out;
   }
 
   private async recordVerdict(
@@ -2423,7 +2567,14 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
   }
 
   private async recordFinding(
-    issue: { type: string; severity: string; title: string; description: string; recommendation: string },
+    issue: {
+      type: string;
+      severity: string;
+      title: string;
+      description: string;
+      recommendation?: string;
+      stepsToReproduce?: string[];
+    },
     evidencePath?: string
   ) {
     const finding = await prisma.explorationFinding.create({
@@ -2434,6 +2585,7 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
         title: issue.title,
         description: issue.description,
         recommendation: issue.recommendation,
+        stepsToReproduce: issue.stepsToReproduce ? JSON.stringify(issue.stepsToReproduce) : null,
         location: this.page?.url(),
         evidence: evidencePath ? JSON.stringify([evidencePath]) : null,
       },

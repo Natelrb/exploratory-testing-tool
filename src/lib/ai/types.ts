@@ -22,7 +22,50 @@ export interface AIProvider {
     ac: AcceptanceCriterion,
     pageAnalysis: PageStructureAnalysis
   ): Promise<ExplorationPlanResult>;
+
+  // Exploratory loop: decide ONE next action at a time, given current page
+  // state and a history of what's been done. The AI can return:
+  //   - "step": take this single next action toward Given+When
+  //   - "done": the WHEN is satisfied, run the oracle now
+  //   - "blocked": can't proceed; explain why
+  // This is what makes the tool actually exploratory — each action is
+  // informed by what just happened, not a stale upfront plan.
+  decideNextStep?(input: DecideNextStepInput): Promise<DecisionResult>;
 }
+
+export interface DecideNextStepInput {
+  acId: string;
+  given: string;
+  when: string;
+  then: string;
+  pageAnalysis: PageStructureAnalysis;
+  history: PriorStepSummary[];
+  observations: string[]; // recent observation strings
+  stepsRemaining: number;
+}
+
+export interface PriorStepSummary {
+  action: string;
+  target: string;
+  description: string;
+  succeeded: boolean;
+  rationale?: string;
+}
+
+export type DecisionResult =
+  | {
+      kind: "step";
+      rationale: string;
+      step: PlannedStep;
+    }
+  | {
+      kind: "done";
+      rationale: string;
+    }
+  | {
+      kind: "blocked";
+      reason: string;
+    };
 
 // Result of parsing free-form Given/When/Then text. The oracle is the AI's
 // best guess — the user reviews/edits it before running.
