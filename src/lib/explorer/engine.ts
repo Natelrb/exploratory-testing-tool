@@ -90,6 +90,14 @@ export class ExplorationEngine {
 
       if (this.shouldStop()) throw new Error("Exploration stopped by user");
 
+      // Dismiss cookie/consent banners and similar interstitials before
+      // analyzing or running ACs — otherwise oracles fire against the
+      // banner page instead of the actual application.
+      await this.updateProgress(10, "Dismissing consent / interstitial pages");
+      await this.dismissInterstitials();
+
+      if (this.shouldStop()) throw new Error("Exploration stopped by user");
+
       await this.updateProgress(15, "Analyzing page structure");
       const pageAnalysis = await this.analyzePage();
 
@@ -1598,6 +1606,120 @@ export class ExplorationEngine {
       potentialRisks: [],
       accessibilityNotes: [],
     };
+  }
+
+  // Dismiss cookie banners, GDPR consent screens, "Before you continue"
+  // pages, and other interstitials that intercept the actual application.
+  // Strategy:
+  //   1. Prefer privacy-preserving options (Reject all / Decline / Necessary
+  //      only) per the user-privacy guidance.
+  //   2. Fall back to permissive options (Accept / Continue / Got it) when
+  //      no reject button exists — without these the page is unusable.
+  //   3. Iterate up to 3 times in case banners are stacked (e.g. cookie
+  //      then GDPR then onboarding).
+  private async dismissInterstitials() {
+    if (!this.page) return;
+
+    // Match by accessible name (button text or aria-label). Order matters:
+    // first match wins, so reject-style patterns come first.
+    const patterns: Array<{ kind: "reject" | "accept"; re: RegExp }> = [
+      // Privacy-preserving first
+      { kind: "reject", re: /^reject all$/i },
+      { kind: "reject", re: /^reject$/i },
+      { kind: "reject", re: /^decline all$/i },
+      { kind: "reject", re: /^decline$/i },
+      { kind: "reject", re: /^do not accept$/i },
+      { kind: "reject", re: /^necessary only$/i },
+      { kind: "reject", re: /^essential only$/i },
+      { kind: "reject", re: /^only essential cookies$/i },
+      { kind: "reject", re: /^only required$/i },
+      { kind: "reject", re: /^use necessary cookies only$/i },
+      // Permissive fallback
+      { kind: "accept", re: /^accept all$/i },
+      { kind: "accept", re: /^accept all cookies$/i },
+      { kind: "accept", re: /^i accept$/i },
+      { kind: "accept", re: /^accept$/i },
+      { kind: "accept", re: /^agree$/i },
+      { kind: "accept", re: /^i agree$/i },
+      { kind: "accept", re: /^allow all$/i },
+      { kind: "accept", re: /^allow$/i },
+      { kind: "accept", re: /^got it$/i },
+      { kind: "accept", re: /^continue$/i },
+      { kind: "accept", re: /^ok$/i },
+      { kind: "accept", re: /^okay$/i },
+    ];
+
+    for (let pass = 0; pass < 3; pass++) {
+      let dismissed = false;
+
+      // Collect candidate clickable elements with their accessible names.
+      const candidates: Array<{ text: string; selector: string }> = await this.page
+        .evaluate(() => {
+          const out: { text: string; selector: string }[] = [];
+          const nodes = document.querySelectorAll(
+            'button, [role="button"], a, input[type="button"], input[type="submit"]'
+          );
+          let i = 0;
+          for (const el of Array.from(nodes)) {
+            const html = el as HTMLElement;
+            // Skip clearly hidden controls
+            const style = window.getComputedStyle(html);
+            if (style.display === "none" || style.visibility === "hidden") continue;
+            const rect = html.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            const aria = html.getAttribute("aria-label") || "";
+            const text = (html.innerText || aria || (html as HTMLInputElement).value || "")
+              .trim()
+              .slice(0, 80);
+            if (!text) continue;
+            // Tag with a uniquely-resolvable selector (data attribute) so we
+            // can re-find the element after the DOM possibly reflows.
+            html.setAttribute("data-explorer-interstitial", String(i));
+            out.push({ text, selector: `[data-explorer-interstitial="${i}"]` });
+            i++;
+          }
+          return out;
+        })
+        .catch(() => [] as { text: string; selector: string }[]);
+
+      // Find the highest-priority match.
+      let chosen: { text: string; selector: string; kind: "reject" | "accept" } | null = null;
+      for (const p of patterns) {
+        const hit = candidates.find((c) => p.re.test(c.text));
+        if (hit) {
+          chosen = { ...hit, kind: p.kind };
+          break;
+        }
+      }
+
+      if (!chosen) {
+        // No interstitial controls visible; we're done.
+        break;
+      }
+
+      this.log("info", `Dismissing interstitial via "${chosen.text}" (${chosen.kind})`);
+      try {
+        await this.page.click(chosen.selector, { timeout: 5000 });
+        dismissed = true;
+        // Let the page settle / redirect.
+        await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+        await this.page.waitForTimeout(500);
+      } catch (err) {
+        this.log("warn", `Failed to click interstitial control: ${err instanceof Error ? err.message : err}`);
+        break;
+      }
+
+      if (!dismissed) break;
+    }
+
+    // Clean up the marker attributes.
+    await this.page
+      .evaluate(() => {
+        document
+          .querySelectorAll("[data-explorer-interstitial]")
+          .forEach((el) => el.removeAttribute("data-explorer-interstitial"));
+      })
+      .catch(() => {});
   }
 
   private async closeOverlaysIfPresent() {
