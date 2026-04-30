@@ -2479,8 +2479,12 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
         status: "success",
       });
 
-      // Check for issues
-      if (observations.length > 0) {
+      // Check for issues. Skip in AC mode — there we capture targeted
+      // side observations (URL change, console error, slow step, HTTP
+      // error) per-step and don't want the LLM emitting additional
+      // speculative findings on top.
+      const isACMode = !!(this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0);
+      if (observations.length > 0 && !isACMode) {
         const issues = await this.aiProvider.identifyIssues(observations, step.description);
         for (const issue of issues) {
           await this.recordFinding(issue, afterPath);
