@@ -1,5 +1,7 @@
 // AI Service abstraction types
 
+import type { AcceptanceCriterion, Oracle } from "@/lib/explorer/types";
+
 export interface AIProvider {
   name: string;
   analyzePageStructure(html: string, url: string): Promise<PageStructureAnalysis>;
@@ -11,6 +13,27 @@ export interface AIProvider {
   ): Promise<ExplorationPlanResult>;
   analyzeScreenshot?(screenshot: Buffer, context: string): Promise<ScreenshotAnalysis>;
   identifyIssues(observations: string[], context: string): Promise<IdentifiedIssue[]>;
+
+  // AC mode: parse free-form text into structured ACs and propose plans per AC.
+  // Both methods are optional so existing providers remain interface-compatible
+  // until they implement them.
+  parseAcceptanceCriteria?(text: string): Promise<ParsedAC[]>;
+  proposeACPlan?(
+    ac: AcceptanceCriterion,
+    pageAnalysis: PageStructureAnalysis
+  ): Promise<ExplorationPlanResult>;
+}
+
+// Result of parsing free-form Given/When/Then text. The oracle is the AI's
+// best guess — the user reviews/edits it before running.
+export interface ParsedAC {
+  externalId: string;
+  given: string;
+  when: string;
+  then: string;
+  priority: "must" | "should" | "could";
+  oracle: Oracle;
+  oracleConfidence: "high" | "medium" | "low"; // hint to UI for review prompts
 }
 
 export interface PageStructureAnalysis {

@@ -12,7 +12,9 @@ import type {
   NavigationInfo,
   FormInfo,
   ElementInfo,
+  ParsedAC,
 } from "./types";
+import type { AcceptanceCriterion, Oracle } from "@/lib/explorer/types";
 
 export class HeuristicProvider implements AIProvider {
   name = "heuristic";
@@ -629,4 +631,83 @@ export class HeuristicProvider implements AIProvider {
         return "Test value";
     }
   }
+
+  // ============================================
+  // Acceptance Criteria mode (heuristic parsing)
+  // ============================================
+
+  // Best-effort split of free-form Gherkin into structured ACs. This handles
+  // the common shapes: line-prefixed Given/When/Then, blank-line separated
+  // blocks, or numbered "Scenario" / "AC-N" headings. Without an LLM we can't
+  // infer a useful oracle, so we always emit a "judge" oracle with the THEN
+  // clause as the rubric — the user is expected to refine before running.
+  async parseAcceptanceCriteria(text: string): Promise<ParsedAC[]> {
+    const out: ParsedAC[] = [];
+    if (!text.trim()) return out;
+
+    // Split into blocks. First try blank-line separation; if there's only one
+    // block, fall back to splitting on each "Given" keyword.
+    const blockSplits = text
+      .split(/\n\s*\n/)
+      .map((b) => b.trim())
+      .filter(Boolean);
+    const blocks =
+      blockSplits.length > 1
+        ? blockSplits
+        : text
+            .split(/(?=^\s*(?:Scenario|AC[\s-]*\d+|Given)\b)/im)
+            .map((b) => b.trim())
+            .filter(Boolean);
+
+    let counter = 0;
+    for (const block of blocks) {
+      counter += 1;
+      const given = matchClause(block, "given");
+      const when = matchClause(block, "when");
+      const then = matchClause(block, "then");
+
+      if (!given && !when && !then) continue;
+
+      const oracle: Oracle = { kind: "judge", rubric: then || block };
+      out.push({
+        externalId: `AC-${counter}`,
+        given: given || "",
+        when: when || "",
+        then: then || "",
+        priority: /\bmust\b/i.test(block)
+          ? "must"
+          : /\bshould\b/i.test(block)
+          ? "should"
+          : "should",
+        oracle,
+        oracleConfidence: "low",
+      });
+    }
+    return out;
+  }
+
+  // Without an LLM we cannot translate AC text into selector-driven steps
+  // safely. Return an empty plan so the engine records a "blocked: no plan"
+  // verdict — preferable to emitting random clicks.
+  async proposeACPlan(
+    ac: AcceptanceCriterion,
+    _pageAnalysis: PageStructureAnalysis
+  ): Promise<ExplorationPlanResult> {
+    return {
+      objective: `Verify ${ac.id}: ${ac.then}`,
+      steps: [],
+      expectedFindings: [],
+      risks: ["Heuristic provider cannot generate AC plans — switch to an LLM provider."],
+    };
+  }
+}
+
+function matchClause(block: string, keyword: string): string | null {
+  // Match "Given <text>" up to the next clause keyword or end of block.
+  const re = new RegExp(
+    `\\b${keyword}\\b\\s+(.+?)(?=\\b(?:given|when|then|and|but)\\b|$)`,
+    "is"
+  );
+  const m = block.match(re);
+  return m ? m[1].trim().replace(/\s+/g, " ") : null;
 }

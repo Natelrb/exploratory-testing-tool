@@ -14,6 +14,8 @@ import type {
   ExplorationLog,
   Session,
   Charter,
+  AcceptanceCriterion,
+  ACVerdict,
 } from "@/generated/prisma/client";
 
 type RunWithRelations = ExplorationRun & {
@@ -22,6 +24,7 @@ type RunWithRelations = ExplorationRun & {
   evidence: ExplorationEvidence[];
   logs: ExplorationLog[];
   session: (Session & { charter: Charter }) | null;
+  acceptanceCriteria: (AcceptanceCriterion & { verdicts: ACVerdict[] })[];
 };
 
 interface Props {
@@ -279,10 +282,19 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700">
         <div className="border-b border-gray-200 dark:border-gray-700">
           <nav className="flex -mb-px">
-            {(["actions", "findings", "evidence", "logs"] as const).map((tab) => {
+            {(["criteria", "actions", "findings", "evidence", "logs"] as const).map((tab) => {
+              // Hide criteria tab if no ACs.
+              if (tab === "criteria" && (!run.acceptanceCriteria || run.acceptanceCriteria.length === 0)) {
+                return null;
+              }
               // Count errors and warnings for logs tab
-              const errorCount = tab === "logs" ? run.logs.filter(l => l.level === "error").length : 0;
-              const warnCount = tab === "logs" ? run.logs.filter(l => l.level === "warn").length : 0;
+              const errorCount = tab === "logs" ? run.logs.filter((l: ExplorationLog) => l.level === "error").length : 0;
+              const warnCount = tab === "logs" ? run.logs.filter((l: ExplorationLog) => l.level === "warn").length : 0;
+
+              const tabCount =
+                tab === "criteria"
+                  ? run.acceptanceCriteria.length
+                  : (run as unknown as Record<string, unknown[]>)[tab].length;
 
               return (
                 <button
@@ -294,9 +306,9 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                       : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
                   }`}
                 >
-                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "criteria" ? "Acceptance Criteria" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                   <span className="text-xs text-gray-400">
-                    ({run[tab].length})
+                    ({tabCount})
                   </span>
                   {tab === "logs" && errorCount > 0 && (
                     <span className="ml-1 px-1.5 py-0.5 text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300 rounded">
@@ -315,6 +327,108 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
         </div>
 
         <div className="p-4">
+          {/* Acceptance Criteria Tab */}
+          {activeTab === "criteria" && (
+            <div className="space-y-3">
+              {run.acceptanceCriteria.length === 0 ? (
+                <p className="text-gray-500 dark:text-gray-400 text-center py-4">
+                  No acceptance criteria for this run
+                </p>
+              ) : (
+                <>
+                  {/* Summary row */}
+                  {(() => {
+                    const counts = { pass: 0, fail: 0, blocked: 0, error: 0, pending: 0 };
+                    for (const ac of run.acceptanceCriteria as (AcceptanceCriterion & { verdicts: ACVerdict[] })[]) {
+                      const v = ac.verdicts[0];
+                      if (!v) counts.pending++;
+                      else (counts as Record<string, number>)[v.status]++;
+                    }
+                    return (
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <span className="px-2 py-1 rounded bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                          {counts.pass} pass
+                        </span>
+                        <span className="px-2 py-1 rounded bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                          {counts.fail} fail
+                        </span>
+                        <span className="px-2 py-1 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                          {counts.blocked} blocked
+                        </span>
+                        {counts.error > 0 && (
+                          <span className="px-2 py-1 rounded bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                            {counts.error} error
+                          </span>
+                        )}
+                        {counts.pending > 0 && (
+                          <span className="px-2 py-1 rounded bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                            {counts.pending} pending
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {(run.acceptanceCriteria as (AcceptanceCriterion & { verdicts: ACVerdict[] })[]).map((ac) => {
+                    const verdict = ac.verdicts[0];
+                    const status = verdict?.status ?? "pending";
+                    const statusColor: Record<string, string> = {
+                      pass: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+                      fail: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+                      blocked: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
+                      error: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+                      pending: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300",
+                    };
+                    let oracle: { kind: string; [k: string]: unknown } | null = null;
+                    try {
+                      oracle = JSON.parse(ac.oracle);
+                    } catch {
+                      // ignore
+                    }
+                    return (
+                      <div
+                        key={ac.id}
+                        className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-700"
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="font-mono font-semibold text-sm">
+                            {ac.externalId}
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${statusColor[status]}`}>
+                            {status}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                            {ac.priority}
+                          </span>
+                          {oracle && (
+                            <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                              oracle: {oracle.kind}
+                            </span>
+                          )}
+                          {verdict?.duration != null && (
+                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                              {verdict.duration}ms
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-700 dark:text-gray-300 space-y-0.5">
+                          {ac.given && <div><span className="font-semibold text-gray-600 dark:text-gray-400">Given</span> {ac.given}</div>}
+                          {ac.whenText && <div><span className="font-semibold text-gray-600 dark:text-gray-400">When</span> {ac.whenText}</div>}
+                          {ac.thenText && <div><span className="font-semibold text-gray-600 dark:text-gray-400">Then</span> {ac.thenText}</div>}
+                        </div>
+                        {verdict?.reason && (
+                          <div className="mt-2 text-xs text-gray-600 dark:text-gray-400 border-l-2 border-gray-300 dark:border-gray-600 pl-2">
+                            {verdict.reason}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
+
           {/* Actions Tab */}
           {activeTab === "actions" && (
             <div className="space-y-3">
@@ -323,7 +437,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                   No actions executed yet
                 </p>
               ) : (
-                run.actions.map((action) => (
+                run.actions.map((action: ExplorationAction) => (
                   <div
                     key={action.id}
                     className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
@@ -394,7 +508,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                   No findings yet
                 </p>
               ) : (
-                run.findings.map((finding) => (
+                run.findings.map((finding: ExplorationFinding) => (
                   <div
                     key={finding.id}
                     className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
@@ -442,7 +556,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 </p>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {run.evidence.map((ev) => (
+                  {run.evidence.map((ev: ExplorationEvidence) => (
                     <div
                       key={ev.id}
                       className="p-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
@@ -528,7 +642,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                       : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
-                  Errors ({run.logs.filter(l => l.level === "error").length})
+                  Errors ({run.logs.filter((l: ExplorationLog) => l.level === "error").length})
                 </button>
                 <button
                   onClick={() => setLogLevelFilter("warn")}
@@ -538,7 +652,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                       : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
-                  Warnings ({run.logs.filter(l => l.level === "warn").length})
+                  Warnings ({run.logs.filter((l: ExplorationLog) => l.level === "warn").length})
                 </button>
                 <button
                   onClick={() => setLogLevelFilter("info")}
@@ -548,7 +662,7 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                       : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                   }`}
                 >
-                  Info ({run.logs.filter(l => l.level === "info").length})
+                  Info ({run.logs.filter((l: ExplorationLog) => l.level === "info").length})
                 </button>
               </div>
 
@@ -557,14 +671,14 @@ export default function ExplorationDetailClient({ run: initialRun }: Props) {
                 {(() => {
                   const filteredLogs = logLevelFilter === "all"
                     ? run.logs
-                    : run.logs.filter(log => log.level === logLevelFilter);
+                    : run.logs.filter((log: ExplorationLog) => log.level === logLevelFilter);
 
                   return filteredLogs.length === 0 ? (
                     <p className="text-gray-500 dark:text-gray-400 text-center py-4 font-sans text-sm">
                       No {logLevelFilter === "all" ? "" : logLevelFilter} logs
                     </p>
                   ) : (
-                    filteredLogs.map((log) => (
+                    filteredLogs.map((log: ExplorationLog) => (
                       <div
                         key={log.id}
                         className={`py-1 px-2 rounded ${

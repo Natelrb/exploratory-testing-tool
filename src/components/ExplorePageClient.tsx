@@ -31,6 +31,16 @@ interface Props {
   })[];
 }
 
+interface ParsedACPreview {
+  externalId: string;
+  given: string;
+  when: string;
+  then: string;
+  priority: "must" | "should" | "could";
+  oracle: { kind: string; [k: string]: unknown };
+  oracleConfidence: "high" | "medium" | "low";
+}
+
 export default function ExplorePageClient({ initialRuns }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -45,6 +55,10 @@ export default function ExplorePageClient({ initialRuns }: Props) {
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; url: string } | null>(null);
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
   const [selectedConfig, setSelectedConfig] = useState<string>("");
+  const [acText, setAcText] = useState("");
+  const [parsedACs, setParsedACs] = useState<ParsedACPreview[] | null>(null);
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   // Update runs when initialRuns changes (after revalidation)
   useEffect(() => {
@@ -109,6 +123,7 @@ export default function ExplorePageClient({ initialRuns }: Props) {
             password: password.trim() || undefined,
             headless,
           },
+          acceptanceCriteriaText: acText.trim() || undefined,
         });
 
         router.push(`/explore/${run.id}`);
@@ -117,6 +132,29 @@ export default function ExplorePageClient({ initialRuns }: Props) {
         alert("Failed to create exploration. Please try again.");
       }
     });
+  };
+
+  const handlePreviewParse = async () => {
+    setParseError(null);
+    setParsing(true);
+    setParsedACs(null);
+    try {
+      const res = await fetch("/api/ai/parse-acs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: acText }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Parse failed (${res.status})`);
+      }
+      const parsed: ParsedACPreview[] = await res.json();
+      setParsedACs(parsed);
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : "Parse failed");
+    } finally {
+      setParsing(false);
+    }
   };
 
   const handleDeleteClick = (e: React.MouseEvent, id: string, url: string) => {
@@ -253,6 +291,77 @@ export default function ExplorePageClient({ initialRuns }: Props) {
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white text-sm"
                 />
               </div>
+            </div>
+
+            <div className="border-t border-gray-200 dark:border-gray-600 pt-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Acceptance Criteria (optional)
+              </label>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                Free-form Given/When/Then. When provided, the AI verifies each AC instead of doing free exploration.
+              </p>
+              <textarea
+                value={acText}
+                onChange={(e) => {
+                  setAcText(e.target.value);
+                  setParsedACs(null);
+                }}
+                placeholder={`AC-1\nGiven I am on the alerts page\nWhen I filter by severity 'critical'\nThen only critical alerts are shown\n\nAC-2\nGiven I am logged in\nWhen I open the user menu\nThen I see a "Sign out" option`}
+                rows={6}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-white text-sm font-mono"
+              />
+              {acText.trim() && (
+                <button
+                  type="button"
+                  onClick={handlePreviewParse}
+                  disabled={parsing}
+                  className="mt-2 px-3 py-1.5 text-xs font-medium border border-gray-300 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                >
+                  {parsing ? "Parsing..." : "Preview parse"}
+                </button>
+              )}
+              {parseError && (
+                <div className="mt-2 text-xs text-red-600 dark:text-red-400">{parseError}</div>
+              )}
+              {parsedACs && parsedACs.length === 0 && !parsing && (
+                <div className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
+                  Parser produced no ACs. The text will be saved as-is and judged by the LLM at runtime.
+                </div>
+              )}
+              {parsedACs && parsedACs.length > 0 && (
+                <div className="mt-3 space-y-2 max-h-72 overflow-y-auto">
+                  {parsedACs.map((ac, i) => (
+                    <div
+                      key={i}
+                      className="p-2 text-xs bg-gray-50 dark:bg-gray-700/50 rounded border border-gray-200 dark:border-gray-600"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-mono font-semibold">{ac.externalId}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                          {ac.priority}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            ac.oracleConfidence === "high"
+                              ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                              : ac.oracleConfidence === "medium"
+                              ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                              : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                          }`}
+                          title="Oracle confidence"
+                        >
+                          oracle: {ac.oracle.kind} ({ac.oracleConfidence})
+                        </span>
+                      </div>
+                      <div className="text-gray-700 dark:text-gray-300">
+                        <div><span className="font-semibold">Given</span> {ac.given}</div>
+                        <div><span className="font-semibold">When</span> {ac.when}</div>
+                        <div><span className="font-semibold">Then</span> {ac.then}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">

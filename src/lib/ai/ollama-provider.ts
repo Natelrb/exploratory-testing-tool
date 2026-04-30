@@ -8,7 +8,9 @@ import type {
   ExplorationPlanResult,
   ScreenshotAnalysis,
   IdentifiedIssue,
+  ParsedAC,
 } from "./types";
+import type { AcceptanceCriterion } from "@/lib/explorer/types";
 
 interface OllamaResponse {
   model: string;
@@ -70,11 +72,17 @@ export class OllamaProvider implements AIProvider {
     // Remove any leading/trailing non-JSON text
     jsonStr = jsonStr.replace(/^[^{\[]+/, '').replace(/[^}\]]+$/, '');
 
-    // Try to find the outermost JSON object or array (greedy match)
+    // Try to find the outermost JSON object or array (greedy match).
+    // Prefer the structure that the response actually starts with — otherwise
+    // a `{` inside an array of objects causes the object regex to match a
+    // bogus span like `{...}, {...}` which isn't valid JSON.
     const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
     const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
+    const startsWithArray = jsonStr.trimStart().startsWith("[");
 
-    let finalJson = objectMatch?.[0] || arrayMatch?.[0] || jsonStr;
+    let finalJson = startsWithArray
+      ? arrayMatch?.[0] || objectMatch?.[0] || jsonStr
+      : objectMatch?.[0] || arrayMatch?.[0] || jsonStr;
 
     // First attempt: parse as-is
     try {
@@ -218,11 +226,13 @@ CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks (no \`
     const relevantArea = pageAnalysis.keyAreas.find((a) => a.name === area);
     const relevantIdeas = charter.testIdeas.filter((t) => t.area === area);
 
-    // Separate elements by whether they're fillable or clickable
-    const clickableElements = pageAnalysis.interactiveElements.filter(el =>
+    // Separate elements by whether they're fillable or clickable.
+    // ElementInfo's nominal type doesn't carry the raw HTML tagName here, but
+    // the runtime payload from the page extractor does.
+    const clickableElements = pageAnalysis.interactiveElements.filter((el: any) =>
       el.tagName === 'BUTTON' || el.tagName === 'A' || el.type === 'submit' || el.type === 'button'
     );
-    const fillableElements = pageAnalysis.interactiveElements.filter(el =>
+    const fillableElements = pageAnalysis.interactiveElements.filter((el: any) =>
       (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
       el.type !== 'submit' && el.type !== 'button'
     );
@@ -352,6 +362,118 @@ If no issues found, return an empty array: []`;
 
     const response = await this.chat(prompt, systemPrompt);
     return this.extractJSON<IdentifiedIssue[]>(response);
+  }
+
+  async parseAcceptanceCriteria(text: string): Promise<ParsedAC[]> {
+    const systemPrompt = `You are an expert QA engineer translating free-form acceptance criteria into structured Gherkin with verifiable oracles.
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks (no \`\`\`json).`;
+
+    const prompt = `Parse the following acceptance criteria into structured form.
+
+For each criterion, infer the most appropriate ORACLE — a deterministic check
+that proves "then" is satisfied. Pick the simplest oracle that fits:
+
+  - "dom"     verify a DOM element/text exists, is visible, has content, etc.
+  - "url"     verify the page URL matches a regex pattern after the action
+  - "console" verify no console errors / warnings during the action
+  - "network" verify a backend request hits a URL pattern with expected status
+  - "judge"   last-resort LLM judge with a rubric (use only when no other oracle fits)
+
+Each oracle has these shapes:
+  { "kind": "dom", "selector": "...", "check": "exists|visible|hidden|text-equals|text-contains|count-equals|count-at-least", "value": "..." }
+  { "kind": "url", "pattern": "regex source", "flags": "i" }
+  { "kind": "console", "check": "no-errors|no-warnings|contains", "value": "..." }
+  { "kind": "network", "method": "GET|POST|...", "urlPattern": "regex", "statusRange": [200, 299] }
+  { "kind": "judge", "rubric": "what makes this pass" }
+
+Use selectors only if you can read them from context; otherwise prefer URL or
+console oracles, or fall back to "judge". Do NOT invent CSS selectors that may
+not exist.
+
+Acceptance criteria text:
+"""
+${text}
+"""
+
+Respond with this exact JSON array structure:
+[
+  {
+    "externalId": "AC-1",
+    "given": "...",
+    "when": "...",
+    "then": "...",
+    "priority": "must|should|could",
+    "oracle": { ... one of the shapes above ... },
+    "oracleConfidence": "high|medium|low"
+  }
+]
+
+If the input is a single criterion, return an array of length 1. If you cannot
+parse the input at all, return [].`;
+
+    const response = await this.chat(prompt, systemPrompt);
+    return this.extractJSON<ParsedAC[]>(response);
+  }
+
+  async proposeACPlan(
+    ac: AcceptanceCriterion,
+    pageAnalysis: PageStructureAnalysis
+  ): Promise<ExplorationPlanResult> {
+    const systemPrompt = `You are an expert QA automation engineer driving exploratory testing toward a single acceptance criterion.
+Your job is to propose the actions needed to (1) reach the GIVEN state and (2) perform the WHEN action.
+You do NOT verify THEN — that is handled separately by an oracle.
+Use only selectors that appear in the page analysis. Do not invent data-testid attributes.
+CRITICAL: Respond with ONLY raw JSON. Do NOT wrap in markdown code blocks.`;
+
+    const clickable = pageAnalysis.interactiveElements
+      .filter((e) => e.type === "button" || e.type === "link")
+      .slice(0, 20);
+    const inputs = pageAnalysis.forms.flatMap((f) => f.fields).slice(0, 15);
+
+    const prompt = `Propose steps to verify this acceptance criterion.
+
+Acceptance criterion ${ac.id}:
+  GIVEN: ${ac.given}
+  WHEN:  ${ac.when}
+  THEN:  ${ac.then}
+
+Page navigation:
+${JSON.stringify(pageAnalysis.navigation.slice(0, 15), null, 2)}
+
+Clickable elements:
+${JSON.stringify(clickable, null, 2)}
+
+Form fields (for fill actions):
+${JSON.stringify(inputs, null, 2)}
+
+Forms:
+${JSON.stringify(pageAnalysis.forms, null, 2)}
+
+RULES:
+- Steps should drive the UI from current state into the GIVEN state, then perform WHEN.
+- Use ONLY selectors that appear above. Do not invent.
+- Aim for 2-6 steps. Fewer is better.
+- If you cannot find selectors that match the GIVEN/WHEN, return an empty steps array.
+
+Respond with this exact JSON:
+{
+  "objective": "Verify ${ac.id}: ${ac.then}",
+  "steps": [
+    {
+      "action": "click|fill|select|hover|scroll|wait",
+      "target": "exact selector",
+      "value": "value (for fill)",
+      "description": "...",
+      "expectedOutcome": "...",
+      "riskLevel": "safe|moderate|risky"
+    }
+  ],
+  "expectedFindings": [],
+  "risks": []
+}`;
+
+    const response = await this.chat(prompt, systemPrompt);
+    return this.extractJSON<ExplorationPlanResult>(response);
   }
 
   private truncateHTML(html: string): string {

@@ -41,10 +41,24 @@ export async function POST(
       },
     });
 
+    // Load any acceptance criteria persisted at run-creation time.
+    const acRows = await prisma.acceptanceCriterion.findMany({
+      where: { runId: id },
+      orderBy: { order: "asc" },
+    });
+    const acceptanceCriteria = acRows.map((r) => ({
+      id: r.externalId,
+      given: r.given,
+      when: r.whenText,
+      then: r.thenText,
+      oracle: JSON.parse(r.oracle),
+      priority: r.priority as "must" | "should" | "could",
+    }));
+
     // Start exploration in background (don't await)
     ExplorationEngine.start(
       id,
-      { url: run.url, ...config },
+      { url: run.url, ...config, acceptanceCriteria: acceptanceCriteria.length ? acceptanceCriteria : undefined },
       aiConfig
     ).catch(async (error) => {
       console.error("Exploration failed:", error);

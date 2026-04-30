@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-export type TabType = 'actions' | 'findings' | 'evidence' | 'logs';
+export type TabType = 'criteria' | 'actions' | 'findings' | 'evidence' | 'logs';
 export type LogLevel = 'all' | 'error' | 'warn' | 'info';
 
 interface ExplorationRun {
@@ -17,7 +17,9 @@ interface ExplorationRun {
 export function useExplorationDetail(initialRun: ExplorationRun) {
   const router = useRouter();
   const [run, setRun] = useState(initialRun);
-  const [activeTab, setActiveTab] = useState<TabType>('actions');
+  // Default to criteria tab if the run has ACs; else actions.
+  const hasACs = Array.isArray((initialRun as any).acceptanceCriteria) && (initialRun as any).acceptanceCriteria.length > 0;
+  const [activeTab, setActiveTab] = useState<TabType>(hasACs ? 'criteria' : 'actions');
   const [selectedScreenshot, setSelectedScreenshot] = useState<string | null>(null);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showRerunConfirm, setShowRerunConfirm] = useState(false);

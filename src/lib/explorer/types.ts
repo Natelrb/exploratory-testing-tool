@@ -9,6 +9,69 @@ export interface ExplorationConfig {
   timeout?: number;
   maxActions?: number;
   focusAreas?: string[];
+  acceptanceCriteria?: AcceptanceCriterion[];
+}
+
+// ============================================
+// Acceptance Criteria & Oracles
+// ============================================
+
+export interface AcceptanceCriterion {
+  id: string;            // user-facing identifier (AC-1, AC-2)
+  given: string;         // precondition / state to reach
+  when: string;          // action(s) to perform
+  then: string;          // observable outcome (human readable)
+  oracle: Oracle;        // verifiable check
+  priority: "must" | "should" | "could";
+  tags?: string[];
+}
+
+export type Oracle =
+  | DOMOracle
+  | URLOracle
+  | ConsoleOracle
+  | NetworkOracle
+  | JudgeOracle;
+
+export interface DOMOracle {
+  kind: "dom";
+  selector: string;
+  check: "exists" | "visible" | "hidden" | "text-equals" | "text-contains" | "count-equals" | "count-at-least";
+  value?: string | number;
+}
+
+export interface URLOracle {
+  kind: "url";
+  pattern: string;       // RegExp source
+  flags?: string;
+}
+
+export interface ConsoleOracle {
+  kind: "console";
+  check: "no-errors" | "no-warnings" | "contains";
+  value?: string;        // for "contains"
+}
+
+export interface NetworkOracle {
+  kind: "network";
+  method?: string;
+  urlPattern: string;    // RegExp source
+  statusRange?: [number, number];   // inclusive, default [200, 299]
+}
+
+export interface JudgeOracle {
+  kind: "judge";
+  rubric: string;        // free-form criteria for LLM verdict
+}
+
+export type ACVerdictStatus = "pass" | "fail" | "blocked" | "error";
+
+export interface ACVerdict {
+  acId: string;
+  status: ACVerdictStatus;
+  reason?: string;
+  evidence: string[];
+  duration?: number;
 }
 
 export interface PageElement {

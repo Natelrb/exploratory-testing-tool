@@ -160,6 +160,8 @@ model ExplorationRun {
   findings       ExplorationFinding[]
   evidence       ExplorationEvidence[]
   logs           ExplorationLog[]
+  acceptanceCriteria AcceptanceCriterion[]
+  acVerdicts     ACVerdict[]
 
   @@map("exploration_runs")
 }
@@ -238,4 +240,42 @@ model ExplorationLog {
   timestamp       DateTime       @default(now())
 
   @@map("exploration_logs")
+}
+
+// AcceptanceCriterion - a Given/When/Then statement with a deterministic oracle.
+// When provided on a run, the engine drives exploration to verify each AC and
+// records a verdict instead of generating freeform findings.
+model AcceptanceCriterion {
+  id           String   @id @default(cuid())
+  run          ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId        String
+  externalId   String   // user-facing identifier (AC-1, AC-2)
+  given        String
+  whenText     String   // "when" is reserved in some SQL dialects; rename column
+  thenText     String
+  oracle       String   // JSON: Oracle
+  priority     String   @default("should") // must | should | could
+  tags         String?  // JSON array
+  order        Int      @default(0)
+  createdAt    DateTime @default(now())
+  verdicts     ACVerdict[]
+
+  @@map("acceptance_criteria")
+}
+
+// ACVerdict - the outcome of attempting to verify an AC during a run.
+model ACVerdict {
+  id           String   @id @default(cuid())
+  run          ExplorationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId        String
+  ac           AcceptanceCriterion @relation(fields: [acId], references: [id], onDelete: Cascade)
+  acId         String
+  status       String   // pass | fail | blocked | error
+  reason       String?
+  evidence     String?  // JSON array of evidence paths
+  duration     Int?     // milliseconds
+  oracleSnapshot String? // JSON snapshot of the oracle that was run
+  createdAt    DateTime @default(now())
+
+  @@map("ac_verdicts")
 }

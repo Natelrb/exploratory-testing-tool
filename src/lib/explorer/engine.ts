@@ -8,6 +8,7 @@ import type {
   ConsoleMessage,
   NetworkRequest,
   NetworkResponse,
+  AcceptanceCriterion,
 } from "./types";
 import { prisma } from "@/lib/db";
 import { explorationManager } from "./manager";
@@ -96,6 +97,20 @@ export class ExplorationEngine {
 
       await this.updateProgress(22, "Checking for accessibility issues");
       await this.saveInitialFindings(pageAnalysis);
+
+      // Branch: if the run was created with acceptance criteria, drive
+      // exploration toward verifying each AC instead of generating a
+      // freeform charter.
+      if (this.config.acceptanceCriteria && this.config.acceptanceCriteria.length > 0) {
+        await this.updateProgress(28, "AC mode: planning per criterion");
+        await this.runACMode(pageAnalysis);
+        await this.updateProgress(96, "Generating summary report");
+        // Reuse summary helper (treats AC plans as "areas").
+        await this.generateSummaryFinding([]);
+        await this.updateProgress(100, "Exploration complete");
+        await this.complete("completed");
+        return;
+      }
 
       let plan;
 
@@ -1312,6 +1327,250 @@ export class ExplorationEngine {
     });
   }
 
+  // ============================================
+  // AC mode — drive exploration to verify each acceptance criterion.
+  // For each AC: ask the AI provider to plan a path to the GIVEN+WHEN
+  // state, execute it, then run the deterministic oracle to verify THEN.
+  // ============================================
+  private async runACMode(pageAnalysis: PageAnalysis) {
+    if (!this.page) return;
+    const acs = this.config.acceptanceCriteria ?? [];
+    if (acs.length === 0) return;
+
+    if (!this.aiProvider.proposeACPlan) {
+      this.log(
+        "error",
+        `AI provider '${this.aiProvider.name}' does not support AC planning. Switch to an LLM-backed provider.`
+      );
+      // Record blocked verdicts for every AC so the UI is accurate.
+      for (const ac of acs) {
+        await this.recordVerdict(ac, "blocked", "AI provider does not support AC planning");
+      }
+      return;
+    }
+
+    // Derive a display charter from the ACs so the existing run UI has
+    // coherent header text.
+    const derivedCharter = {
+      mission: `Verify ${acs.length} acceptance criterion${acs.length === 1 ? "" : "a"}`,
+      riskFocus: "Failures of stated acceptance criteria",
+      scope: `${acs.length} AC(s) in priority order`,
+      outOfScope: ["Generic exploration outside of provided ACs"],
+      testIdeas: acs.map((ac) => ({
+        area: ac.id,
+        idea: ac.then,
+        priority: ac.priority === "must" ? ("high" as const) : ac.priority === "should" ? ("medium" as const) : ("low" as const),
+        rationale: ac.given || ac.when,
+      })),
+      suggestedDuration: Math.max(15, acs.length * 5),
+    };
+    await this.saveCharter(derivedCharter);
+
+    // Build a simplified analysis once (AIProvider expects PageStructureAnalysis).
+    const simplifiedAnalysis = this.buildSimplifiedAnalysis(pageAnalysis);
+
+    // Plan all ACs up front so we can populate totalActions.
+    const acPlans: Array<{
+      ac: AcceptanceCriterion;
+      plan: Awaited<ReturnType<NonNullable<AIProvider["proposeACPlan"]>>>;
+    }> = [];
+    for (let i = 0; i < acs.length; i++) {
+      const ac = acs[i];
+      if (this.shouldStop()) break;
+      await this.updateProgress(
+        30 + Math.floor((i / acs.length) * 8),
+        `Planning ${ac.id}`
+      );
+      try {
+        const plan = await this.aiProvider.proposeACPlan!(ac, simplifiedAnalysis);
+        acPlans.push({ ac, plan });
+      } catch (err) {
+        this.log("warn", `Failed to plan ${ac.id}: ${err instanceof Error ? err.message : err}`);
+        await this.recordVerdict(ac, "error", `Planning failed: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    }
+
+    const totalSteps = Math.min(
+      acPlans.reduce((sum, p) => sum + p.plan.steps.length, 0),
+      this.config.maxActions ?? 50
+    );
+    await prisma.$executeRaw`
+      UPDATE exploration_runs
+      SET totalActions = ${totalSteps},
+          plan = ${JSON.stringify(acPlans.map((p) => ({ area: p.ac.id, ...p.plan })))}
+      WHERE id = ${this.runId}
+    `;
+
+    let stepsExecuted = 0;
+    const maxActions = this.config.maxActions ?? 50;
+
+    // Execute and verify each AC in order.
+    for (let i = 0; i < acPlans.length; i++) {
+      if (this.shouldStop()) break;
+      if (stepsExecuted >= maxActions) {
+        // Mark remaining ACs as blocked.
+        for (let j = i; j < acPlans.length; j++) {
+          await this.recordVerdict(acPlans[j].ac, "blocked", "Action budget exhausted before this AC");
+        }
+        break;
+      }
+
+      const { ac, plan } = acPlans[i];
+      const acProgress = 40 + Math.floor((i / acPlans.length) * 50);
+      await this.updateProgress(acProgress, `Verifying ${ac.id}: ${truncate(ac.then, 40)}`);
+      this.log("info", `Verifying ${ac.id}`, { then: ac.then });
+
+      if (plan.steps.length === 0) {
+        await this.recordVerdict(ac, "blocked", "No actionable plan generated for this AC");
+        continue;
+      }
+
+      // Capture window boundary so we can scope console/network observations
+      // to just this AC's actions.
+      const windowStart = new Date();
+      const consoleStartIdx = this.consoleMessages.length;
+      const networkStartIdx = this.networkResponses.length;
+      const acStart = Date.now();
+      let stepFailed = false;
+
+      for (const step of plan.steps) {
+        if (this.shouldStop()) break;
+        if (stepsExecuted >= maxActions) {
+          stepFailed = true;
+          break;
+        }
+        // Page-state guard.
+        const pageState = await this.validatePageState();
+        if (!pageState.isValid) {
+          this.log("warn", `Skipping ${ac.id} step: ${pageState.reason}`);
+          stepFailed = true;
+          break;
+        }
+        try {
+          await this.executeStep(step);
+          stepsExecuted++;
+        } catch (err) {
+          this.log("warn", `${ac.id} step failed: ${step.description}`);
+          stepsExecuted++;
+          stepFailed = true;
+          // Continue: oracle may still pass if state is acceptable.
+        }
+      }
+
+      if (stepFailed) {
+        // The "given+when" couldn't be reached fully — still try the oracle,
+        // since some oracles (like console no-errors) may legitimately pass.
+        // But we annotate the reason if it fails.
+      }
+
+      // Run the oracle with windowed observations.
+      const ctx = {
+        page: this.page,
+        consoleMessages: this.consoleMessages.slice(consoleStartIdx),
+        networkResponses: this.networkResponses.slice(networkStartIdx),
+        aiProvider: this.aiProvider,
+      };
+      const { runOracle } = await import("./oracles");
+      const result = await runOracle(ac.oracle, ctx);
+      const duration = Date.now() - acStart;
+
+      const status = result.passed ? "pass" : stepFailed ? "blocked" : "fail";
+      const reason = result.passed
+        ? result.reason
+        : stepFailed
+        ? `Plan did not complete: ${result.reason}`
+        : result.reason;
+
+      await this.recordVerdict(ac, status, reason, duration);
+      this.log("info", `${ac.id} → ${status}`, { reason });
+
+      // If the AC failed, record a finding so it shows up in the existing
+      // findings tab in addition to the verdict matrix.
+      if (status === "fail" || status === "blocked") {
+        await this.recordFinding({
+          type: "bug",
+          severity: ac.priority === "must" ? "high" : ac.priority === "should" ? "medium" : "low",
+          title: `${ac.id} ${status}: ${truncate(ac.then, 60)}`,
+          description: `Acceptance criterion ${ac.id} did not pass.\n\nGIVEN: ${ac.given}\nWHEN: ${ac.when}\nTHEN: ${ac.then}\n\nReason: ${reason}`,
+          recommendation:
+            status === "blocked"
+              ? "Review the action plan: the AI could not reach the precondition or perform the action."
+              : "Review the oracle result and the steps leading up to it; the THEN clause was not satisfied.",
+        });
+      }
+    }
+
+    await prisma.explorationRun.update({
+      where: { id: this.runId },
+      data: { completedActions: stepsExecuted },
+    });
+  }
+
+  private async recordVerdict(
+    ac: AcceptanceCriterion,
+    status: "pass" | "fail" | "blocked" | "error",
+    reason: string,
+    duration?: number
+  ) {
+    // Find the persisted AC row (created by the API at run-creation time).
+    const row = await prisma.acceptanceCriterion.findFirst({
+      where: { runId: this.runId, externalId: ac.id },
+    });
+    if (!row) {
+      this.log("warn", `No persisted AC row for ${ac.id}; verdict not recorded`);
+      return;
+    }
+    await prisma.aCVerdict.create({
+      data: {
+        runId: this.runId,
+        acId: row.id,
+        status,
+        reason,
+        duration,
+        oracleSnapshot: JSON.stringify(ac.oracle),
+      },
+    });
+  }
+
+  private buildSimplifiedAnalysis(pageAnalysis: PageAnalysis) {
+    return {
+      appType: "web application",
+      primaryPurpose: pageAnalysis.description || "Unknown",
+      keyAreas: pageAnalysis.navigation.map((n) => ({
+        name: n.text,
+        description: `Navigation item: ${n.text}`,
+        importance: "medium" as const,
+        suggestedTests: [],
+      })),
+      navigation: pageAnalysis.navigation.map((n) => ({
+        label: n.text,
+        selector: n.selector,
+        type: "main" as const,
+        hasSubmenu: n.hasSubmenu,
+      })),
+      forms: pageAnalysis.forms.map((f) => ({
+        purpose: f.action || "Form",
+        selector: f.selector,
+        fields: f.fields.map((field) => ({
+          name: field.name || "field",
+          type: field.type,
+          selector: field.selector,
+          required: field.required,
+        })),
+        submitSelector: f.submitButton?.selector,
+        validationNotes: [],
+      })),
+      interactiveElements: pageAnalysis.interactiveElements.map((e) => ({
+        description: e.text || e.ariaLabel || "Element",
+        selector: e.selector,
+        type: (e.tagName === "A" ? "link" : "button") as "button" | "link",
+        importance: "medium" as const,
+      })),
+      potentialRisks: [],
+      accessibilityNotes: [],
+    };
+  }
+
   private async closeOverlaysIfPresent() {
     if (!this.page) return;
 
@@ -2285,4 +2544,9 @@ Please regenerate the plan using ONLY selectors that actually exist on the page.
     const engine = new ExplorationEngine(runId, config, finalAiConfig, {}, savedPlan);
     await engine.run();
   }
+}
+
+function truncate(s: string, n: number): string {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }

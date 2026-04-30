@@ -4,6 +4,9 @@ import { prisma } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import fs from "fs/promises";
 import path from "path";
+import { createAIProvider, detectBestProvider } from "@/lib/ai";
+import type { ParsedAC } from "@/lib/ai/types";
+import type { Oracle } from "@/lib/explorer/types";
 
 export async function getExplorationRuns(filters?: { status?: string }) {
   return prisma.explorationRun.findMany({
@@ -29,6 +32,12 @@ export async function getExplorationRun(id: string) {
       session: {
         include: { charter: true },
       },
+      acceptanceCriteria: {
+        orderBy: { order: "asc" },
+        include: {
+          verdicts: { orderBy: { createdAt: "desc" }, take: 1 },
+        },
+      },
     },
   });
 }
@@ -38,6 +47,7 @@ export async function createExplorationRun(data: {
   aiProvider: string;
   aiModel?: string;
   config?: object;
+  acceptanceCriteriaText?: string;
 }) {
   const run = await prisma.explorationRun.create({
     data: {
@@ -48,8 +58,66 @@ export async function createExplorationRun(data: {
       status: "pending",
     },
   });
+
+  // If the user supplied free-form acceptance criteria, parse them with the
+  // AI provider and persist as rows. The engine reads these at start time.
+  if (data.acceptanceCriteriaText && data.acceptanceCriteriaText.trim()) {
+    try {
+      const aiConfig = await detectBestProvider();
+      const provider = createAIProvider(aiConfig);
+      let parsed: ParsedAC[] = [];
+      if (provider.parseAcceptanceCriteria) {
+        parsed = await provider.parseAcceptanceCriteria(data.acceptanceCriteriaText);
+      }
+      for (let i = 0; i < parsed.length; i++) {
+        const ac = parsed[i];
+        await prisma.acceptanceCriterion.create({
+          data: {
+            runId: run.id,
+            externalId: ac.externalId || `AC-${i + 1}`,
+            given: ac.given || "",
+            whenText: ac.when || "",
+            thenText: ac.then || "",
+            oracle: JSON.stringify(ac.oracle),
+            priority: ac.priority || "should",
+            order: i,
+          },
+        });
+      }
+    } catch (err) {
+      console.error("Failed to parse ACs:", err);
+      // Persist a single placeholder AC capturing the raw text so the user
+      // can see what happened on the run page.
+      await prisma.acceptanceCriterion.create({
+        data: {
+          runId: run.id,
+          externalId: "AC-1",
+          given: "",
+          whenText: "",
+          thenText: data.acceptanceCriteriaText,
+          oracle: JSON.stringify({
+            kind: "judge",
+            rubric: data.acceptanceCriteriaText,
+          } satisfies Oracle),
+          priority: "should",
+          order: 0,
+        },
+      });
+    }
+  }
+
   revalidatePath("/explore");
   return run;
+}
+
+// Preview-parse free-form text into structured ACs without creating a run.
+// Used by the setup page so the user can review/edit before submitting.
+export async function previewParseACs(text: string): Promise<ParsedAC[]> {
+  if (!text.trim()) return [];
+  const aiConfig = await detectBestProvider();
+  const provider = createAIProvider(aiConfig);
+  if (!provider.parseAcceptanceCriteria) return [];
+  return provider.parseAcceptanceCriteria(text);
 }
 
 export async function updateExplorationRunStatus(
